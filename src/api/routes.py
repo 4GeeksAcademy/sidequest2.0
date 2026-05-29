@@ -111,6 +111,7 @@ def create_event():
         return jsonify({"msg": "date, time and location are required"}), 400
 
     event = Event(
+        title=body.get("title"),
         date=body["date"],
         time=body["time"],
         location=body["location"],

@@ -227,129 +227,58 @@ export default function EventCard({
 
 
 
-	async function createEvent() {
+async function createEvent() {
+    setError("");
 
-		setError("");
+    if (!title || !date || !time) {
+        setError("Please fill required fields");
+        return;
+    }
 
-		if (
-			!title ||
-			!date ||
-			!time
-		) {
+    const location = await geocodeAddress();
+    if (!location) return;
 
-			setError(
-				"Please fill required fields"
-			);
+    // If coords came from map click, address input was hidden — use coords as location string
+    const locationText = address.trim() || `${location.latitude}, ${location.longitude}`;
 
-			return;
+    try {
+        setLoading(true);
 
-		}
+        const response = await fetch(`${API_URL}/events`, {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+                Authorization: `Bearer ${token}`
+            },
+            body: JSON.stringify({
+                title,
+                details: description,        // ← was "description"
+                date,
+                time,
+                location: locationText,       // ← was missing entirely
+                latitude: location.latitude,
+                longitude: location.longitude,
+                invitedFriends: selectedFriends  // ← was "invited_friends"
+            })
+        });
 
-		const location =
-			await geocodeAddress();
+        const data = await response.json();
 
-		if (
-			!location
-		) {
+        if (!response.ok) {
+            setError(data.msg || "Could not create event");
+            return;
+        }
 
-			return;
+        if (refreshEvents) await refreshEvents();
+        resetForm();
+        handleClose();
 
-		}
-
-		try {
-
-			setLoading(
-				true
-			);
-
-			const response =
-				await fetch(
-
-					`${API_URL}/events`,
-
-					{
-
-						method: "POST",
-
-						headers: {
-
-							"Content-Type":
-								"application/json",
-
-							Authorization:
-								`Bearer ${token}`
-
-						},
-
-						body: JSON.stringify({
-
-							title,
-							description,
-							date,
-							time,
-
-							latitude:
-								location.latitude,
-
-							longitude:
-								location.longitude,
-
-							invited_friends:
-								selectedFriends
-
-						})
-
-					}
-
-				);
-
-			const data =
-				await response.json();
-
-			if (
-				!response.ok
-			) {
-
-				setError(
-
-					data.msg ||
-					"Could not create event"
-
-				);
-
-				return;
-
-			}
-
-			if (
-				refreshEvents
-			) {
-
-				await refreshEvents();
-
-			}
-
-			resetForm();
-
-			handleClose();
-
-		}
-		catch {
-
-			setError(
-				"Server error"
-			);
-
-		}
-		finally {
-
-			setLoading(
-				false
-			);
-
-		}
-
-	}
+    } catch {
+        setError("Server error");
+    } finally {
+        setLoading(false);
+    }
+}
 
 
 

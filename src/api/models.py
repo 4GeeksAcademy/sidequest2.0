@@ -53,6 +53,7 @@ class Event(db.Model):
     __tablename__ = "event"
 
     id:         Mapped[int]   = mapped_column(primary_key=True)
+    title:      Mapped[str]   = mapped_column(String(120), nullable=True)
     date:       Mapped[str]   = mapped_column(String(50),  nullable=False)
     time:       Mapped[str]   = mapped_column(String(50),  nullable=False)
     location:   Mapped[str]   = mapped_column(String(255), nullable=False)
@@ -61,6 +62,7 @@ class Event(db.Model):
     details:    Mapped[str]   = mapped_column(Text,        nullable=True)
     image:      Mapped[str]   = mapped_column(String(500), nullable=True)
     creator_id: Mapped[int]   = mapped_column(ForeignKey("user.id"), nullable=False)
+    
 
     creator:      Mapped["User"]       = relationship("User", foreign_keys=[creator_id])
     participants: Mapped[list["User"]] = relationship(
@@ -69,6 +71,7 @@ class Event(db.Model):
 
     def serialize(self):
         return {
+            "title": self.title,
             "id":                 self.id,
             "date":               self.date,
             "time":               self.time,

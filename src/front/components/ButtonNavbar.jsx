@@ -22,7 +22,7 @@ import {
 } from "react-icons/fi";
 
 // =====================================================
-// INLINE API HELPERS (consistent with friends/navbar style)
+// INLINE API HELPERS
 // =====================================================
 const API = import.meta.env.VITE_BACKEND_URL;
 
@@ -48,7 +48,7 @@ const apiUpdateMyProfile = (payload) =>
   }).then(handle);
 
 // =====================================================
-// INLINE STYLES (dark mode, consistent with Friends page)
+// INLINE STYLES
 // =====================================================
 const PROFILE_CSS = `
 .profile-modal .modal-content {
@@ -109,8 +109,6 @@ const PROFILE_CSS = `
 .activity-bar .progress { background: #0f111a; height: 14px; border-radius: 10px; }
 .activity-bar .progress-bar { background: linear-gradient(90deg, #6366f1, #ec4899); }
 
-/* Hide the bottom navbar while any Bootstrap modal is open so the
-   modal footer (Save / Close buttons) is never covered. */
 body.modal-open .bottom-navbar { display: none; }
 `;
 
@@ -134,32 +132,15 @@ const levelColor = (level) => {
 // =====================================================
 // MAIN
 // =====================================================
-export const BottomNavbar = () => {
+export const BottomNavbar = ({ onQuestClick }) => {
   const [showProfile, setShowProfile] = useState(false);
-  const [showQuest, setShowQuest] = useState(false);
 
-  // PROFILE STATE (real, from backend)
+  // PROFILE STATE
   const [profile, setProfile] = useState(null);
   const [profileLoading, setProfileLoading] = useState(false);
   const [profileError, setProfileError] = useState(null);
   const [profileSaving, setProfileSaving] = useState(false);
   const [profileToast, setProfileToast] = useState(null);
-
-  // QUEST STATE (unchanged — local stub)
-  const [eventData, setEventData] = useState({
-    date: "",
-    time: "",
-    location: "",
-    details: "",
-    image: "",
-    invitedFriends: [],
-  });
-
-  const friends = [
-    { id: 1, name: "Sarah Kim", username: "@sarahk" },
-    { id: 2, name: "Lucas Reed", username: "@lucasr" },
-    { id: 3, name: "Mia Lopez", username: "@mial" },
-  ];
 
   // =====================================================
   // LOAD PROFILE when modal opens
@@ -203,48 +184,15 @@ export const BottomNavbar = () => {
         phone:               profile.phone || null,
       };
       const data = await apiUpdateMyProfile(payload);
-      // keep current stats but refresh user fields
       setProfile((p) => ({ ...p, ...data.user }));
       setProfileToast("Profile saved");
       setTimeout(() => setProfileToast(null), 2000);
-      // also sync the cached user in localStorage so Navbar greeting stays correct
       localStorage.setItem("user", JSON.stringify(data.user));
     } catch (e) {
       setProfileError(e.message);
     } finally {
       setProfileSaving(false);
     }
-  };
-
-  // =====================================================
-  // QUEST HANDLERS (unchanged)
-  // =====================================================
-  const handleQuestChange = (e) => {
-    setEventData({ ...eventData, [e.target.name]: e.target.value });
-  };
-
-  const handleQuestImage = (e) => {
-    const file = e.target.files[0];
-    if (file) {
-      setEventData({ ...eventData, image: URL.createObjectURL(file) });
-    }
-  };
-
-  const toggleFriend = (id) => {
-    setEventData((prev) => {
-      const exists = prev.invitedFriends.includes(id);
-      return {
-        ...prev,
-        invitedFriends: exists
-          ? prev.invitedFriends.filter((f) => f !== id)
-          : [...prev.invitedFriends, id],
-      };
-    });
-  };
-
-  const createQuest = () => {
-    console.log("QUEST:", eventData);
-    setShowQuest(false);
   };
 
   // =====================================================
@@ -270,7 +218,7 @@ export const BottomNavbar = () => {
 
         <button
           className="bottom-item border-0 bg-transparent"
-          onClick={() => setShowQuest(true)}
+          onClick={onQuestClick}
         >
           <FiPlus />
           <span>quest</span>
@@ -290,9 +238,7 @@ export const BottomNavbar = () => {
         </button>
       </div>
 
-      {/* =====================================================
-          PROFILE MODAL
-      ===================================================== */}
+      {/* PROFILE MODAL */}
       <Modal
         show={showProfile}
         onHide={() => setShowProfile(false)}
@@ -476,72 +422,6 @@ export const BottomNavbar = () => {
           <Button onClick={saveProfile} disabled={profileSaving || !profile}>
             {profileSaving ? <Spinner animation="border" size="sm" /> : "Save"}
           </Button>
-        </Modal.Footer>
-      </Modal>
-
-      {/* =====================================================
-          QUEST MODAL  (cosmetic stub, unchanged)
-      ===================================================== */}
-      <Modal show={showQuest} onHide={() => setShowQuest(false)} centered>
-        <Modal.Header closeButton>
-          <Modal.Title>Create Quest</Modal.Title>
-        </Modal.Header>
-
-        <Modal.Body>
-          <Form>
-            <Form.Control
-              type="date"
-              name="date"
-              className="mb-2"
-              onChange={handleQuestChange}
-            />
-            <Form.Control
-              type="time"
-              name="time"
-              className="mb-2"
-              onChange={handleQuestChange}
-            />
-            <Form.Control
-              type="text"
-              name="location"
-              className="mb-2"
-              placeholder="Location"
-              onChange={handleQuestChange}
-            />
-            <Form.Control
-              as="textarea"
-              rows={3}
-              name="details"
-              className="mb-2"
-              placeholder="Details"
-              onChange={handleQuestChange}
-            />
-            <Form.Control
-              type="file"
-              className="mb-3"
-              onChange={handleQuestImage}
-            />
-
-            <div>
-              <strong>Invite friends</strong>
-              {friends.map((f) => (
-                <Form.Check
-                  key={f.id}
-                  type="checkbox"
-                  label={`${f.name} (${f.username})`}
-                  checked={eventData.invitedFriends.includes(f.id)}
-                  onChange={() => toggleFriend(f.id)}
-                />
-              ))}
-            </div>
-          </Form>
-        </Modal.Body>
-
-        <Modal.Footer>
-          <Button variant="secondary" onClick={() => setShowQuest(false)}>
-            Cancel
-          </Button>
-          <Button onClick={createQuest}>Create</Button>
         </Modal.Footer>
       </Modal>
     </>

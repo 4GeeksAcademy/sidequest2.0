@@ -12,6 +12,11 @@ export const Home = () => {
 	const [createEventData, setCreateEventData] = useState({});
 	const [selectedEvent, setSelectedEvent] = useState(null);
 
+	const openEventForm = (coords = {}) => {
+		setCreateEventData(coords);
+		setShowModal(true);
+	};
+
 	return (
 		<div className="home-page">
 
@@ -25,10 +30,7 @@ export const Home = () => {
 
 			<Mapview
 				setSelectedEvent={setSelectedEvent}
-				setCreateEventData={(coords) => {
-					setCreateEventData(coords);
-					setShowModal(true);
-				}}
+				setCreateEventData={openEventForm}
 			/>
 
 			<EventCard
@@ -45,7 +47,7 @@ export const Home = () => {
 				</div>
 			)}
 
-			<BottomNavbar />
+			<BottomNavbar onQuestClick={() => openEventForm()} />
 
 		</div>
 	);
