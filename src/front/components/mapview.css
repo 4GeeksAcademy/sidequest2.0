@@ -53,12 +53,17 @@
   100% { transform: scale(1.6); opacity: 0;   }
 }
 
-/* ── Recenter / follow-me button ── */
+/* ── Recenter / follow-me button ──
+   position: fixed so it stays anchored to the viewport bottom-right
+   regardless of map scrolling or container size.
+   bottom is offset above the floating pill bottom-nav (z-index 1040,
+   sits at ~1rem + safe-area-inset-bottom, ~58px tall).
+   z-index: 1041 → above the pill, but below Bootstrap modals (1050+). */
 .sq-recenter-btn {
-  position: absolute;
-  bottom: 20px;
+  position: fixed;
+  bottom: calc(90px + env(safe-area-inset-bottom));
   right: 16px;
-  z-index: 500;
+  z-index: 1041;
   width: 44px;
   height: 44px;
   border-radius: 50%;
@@ -81,3 +86,8 @@
   cursor: not-allowed;
   transform: none !important;
 }
+
+/* Hide the recenter button while any Bootstrap modal is open so it
+   doesn't float above the modal backdrop (modals use z-index 1050+,
+   so this is mostly a safety net for older Bootstrap stacks). */
+body.modal-open .sq-recenter-btn { display: none; }

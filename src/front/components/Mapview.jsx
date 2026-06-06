@@ -367,7 +367,7 @@ export const Mapview = ({ onMapClick, onMarkerClick, onSaved }) => {
 
       <div
         className="sq-map-wrapper"
-        style={{ height: "calc(100vh - 56px - 64px)", width: "100%" }}
+        style={{ height: "100vh", width: "100%" }}
       >
         <MapContainer
           center={mapCenter}
