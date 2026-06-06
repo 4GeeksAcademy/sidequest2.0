@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import { Link } from "react-router-dom";
+import { Link, useLocation } from "react-router-dom";
 import {
   Button,
   Modal,
@@ -23,10 +23,11 @@ import {
   FiX,
 } from "react-icons/fi";
 
+import useGlobalReducer from "../hooks/useGlobalReducer";
 import { EventModal } from "./EventModal";
 
 // =====================================================
-// INLINE API HELPERS (consistent with friends/navbar style)
+// INLINE API HELPERS
 // =====================================================
 const API = import.meta.env.VITE_BACKEND_URL;
 
@@ -51,9 +52,6 @@ const apiUpdateMyProfile = (payload) =>
     body: JSON.stringify(payload),
   }).then(handle);
 
-// Convert a File / Blob to base64 dataURL — same approach used for
-// event.image and chat media. The backend stores it directly in
-// profile_picture_url (Text column).
 const fileToBase64 = (file) =>
   new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -63,9 +61,94 @@ const fileToBase64 = (file) =>
   });
 
 // =====================================================
-// INLINE STYLES (dark mode, consistent with Friends page)
+// INLINE STYLES — Instagram pill + dark profile modal
 // =====================================================
-const PROFILE_CSS = `
+const STYLE_CSS = `
+/* ─────────────────────────────────────────────────────
+   Bottom nav — pill flotante con glassmorphism.
+   VISIBLE en todos los tamaños de pantalla.
+   ───────────────────────────────────────────────────── */
+.sq-bottom-nav {
+  position: fixed;
+  left: 50%;
+  bottom: calc(1rem + env(safe-area-inset-bottom));
+  transform: translateX(-50%);
+  z-index: 1040;
+
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.45rem 0.55rem;
+
+  background: rgba(15, 17, 26, 0.72);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 999px;
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.55),
+              inset 0 1px 0 rgba(255, 255, 255, 0.04);
+
+  -webkit-backdrop-filter: blur(20px) saturate(180%);
+          backdrop-filter: blur(20px) saturate(180%);
+}
+
+.sq-bottom-nav-item {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 58px;
+  height: 44px;
+  border-radius: 999px;
+  color: rgba(255, 255, 255, 0.62);
+  text-decoration: none;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  transition: color 0.18s ease, background 0.18s ease, transform 0.15s ease;
+}
+.sq-bottom-nav-item:hover { color: rgba(255, 255, 255, 0.95); }
+.sq-bottom-nav-item:active { transform: scale(0.93); }
+.sq-bottom-nav-item.active {
+  background: rgba(255, 255, 255, 0.10);
+  color: #fff;
+}
+
+/* Botón centro: CTA "+ Quest" con gradiente */
+.sq-bottom-nav-create {
+  background: linear-gradient(135deg, #6366f1, #ec4899);
+  color: #fff;
+  width: 50px;
+  height: 50px;
+  box-shadow: 0 6px 18px rgba(99, 102, 241, 0.45);
+}
+.sq-bottom-nav-create:hover {
+  background: linear-gradient(135deg, #4f46e5, #db2777);
+  color: #fff;
+}
+
+/* Indicador puntito rojo */
+.sq-bottom-nav-dot {
+  position: absolute;
+  top: 6px;
+  right: 10px;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: #ef4444;
+  border: 2px solid #0f111a;
+  animation: sq-bottom-dot-pulse 2s ease-in-out infinite;
+}
+@keyframes sq-bottom-dot-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.55); }
+  50%      { box-shadow: 0 0 0 5px rgba(239, 68, 68, 0); }
+}
+
+/* Esconder cuando hay un modal Bootstrap abierto */
+body.modal-open .sq-bottom-nav { display: none; }
+
+
+/* ─────────────────────────────────────────────────────
+   Profile modal
+   ───────────────────────────────────────────────────── */
 .profile-modal .modal-content {
   background: #161922;
   color: #e9ecef;
@@ -124,7 +207,6 @@ const PROFILE_CSS = `
 .activity-bar .progress { background: #0f111a; height: 14px; border-radius: 10px; }
 .activity-bar .progress-bar { background: linear-gradient(90deg, #6366f1, #ec4899); }
 
-/* Photo picker (replaces the old URL input) */
 .profile-photo-picker {
   display: flex;
   flex-direction: column;
@@ -140,10 +222,6 @@ const PROFILE_CSS = `
   color: #6c757d;
   background: #0f111a;
 }
-
-/* Hide the bottom navbar while any Bootstrap modal is open so the
-   modal footer (Save / Close buttons) is never covered. */
-body.modal-open .bottom-navbar { display: none; }
 `;
 
 // =====================================================
@@ -167,38 +245,23 @@ const levelColor = (level) => {
 // MAIN
 // =====================================================
 export const BottomNavbar = () => {
+  const location = useLocation();
+  const { store } = useGlobalReducer();
+
+  const isLogged = !!localStorage.getItem("token");
+  const notifUnread = store.unreadNotifsCount || 0;
+
   const [showProfile, setShowProfile] = useState(false);
   const [showQuest, setShowQuest] = useState(false);
 
-  // PROFILE STATE (real, from backend)
   const [profile, setProfile] = useState(null);
   const [profileLoading, setProfileLoading] = useState(false);
   const [profileError, setProfileError] = useState(null);
   const [profileSaving, setProfileSaving] = useState(false);
   const [profileToast, setProfileToast] = useState(null);
 
-  // Hidden <input type="file"> driven by the visible button below
   const photoInputRef = useRef(null);
 
-  // QUEST STATE (unchanged — local stub)
-  const [eventData, setEventData] = useState({
-    date: "",
-    time: "",
-    location: "",
-    details: "",
-    image: "",
-    invitedFriends: [],
-  });
-
-  const friends = [
-    { id: 1, name: "Sarah Kim", username: "@sarahk" },
-    { id: 2, name: "Lucas Reed", username: "@lucasr" },
-    { id: 3, name: "Mia Lopez", username: "@mial" },
-  ];
-
-  // =====================================================
-  // LOAD PROFILE when modal opens
-  // =====================================================
   useEffect(() => {
     if (!showProfile) return;
     (async () => {
@@ -215,21 +278,17 @@ export const BottomNavbar = () => {
     })();
   }, [showProfile]);
 
-  // =====================================================
-  // PROFILE HANDLERS
-  // =====================================================
   const handleProfileChange = (e) => {
     setProfile((p) => ({ ...p, [e.target.name]: e.target.value }));
   };
 
-  // ----- photo upload (replaces the URL input) -----
   const handlePickPhoto = () => {
     if (photoInputRef.current) photoInputRef.current.click();
   };
 
   const handlePhotoChange = async (e) => {
     const file = e.target.files?.[0];
-    e.target.value = ""; // allow re-uploading the same file later
+    e.target.value = "";
     if (!file) return;
     if (file.size > 1.5 * 1024 * 1024) {
       setProfileError("Image too large (max 1.5 MB)");
@@ -263,11 +322,9 @@ export const BottomNavbar = () => {
         phone: profile.phone || null,
       };
       const data = await apiUpdateMyProfile(payload);
-      // keep current stats but refresh user fields
       setProfile((p) => ({ ...p, ...data.user }));
       setProfileToast("Profile saved");
       setTimeout(() => setProfileToast(null), 2000);
-      // also sync the cached user in localStorage so Navbar greeting stays correct
       localStorage.setItem("user", JSON.stringify(data.user));
     } catch (e) {
       setProfileError(e.message);
@@ -276,83 +333,75 @@ export const BottomNavbar = () => {
     }
   };
 
-  // =====================================================
-  // QUEST HANDLERS (unchanged)
-  // =====================================================
-  const handleQuestChange = (e) => {
-    setEventData({ ...eventData, [e.target.name]: e.target.value });
+  const isActive = (path) => {
+    if (path === "/") return location.pathname === "/";
+    return location.pathname.startsWith(path);
   };
 
-  const handleQuestImage = (e) => {
-    const file = e.target.files[0];
-    if (file) {
-      setEventData({ ...eventData, image: URL.createObjectURL(file) });
-    }
-  };
-
-  const toggleFriend = (id) => {
-    setEventData((prev) => {
-      const exists = prev.invitedFriends.includes(id);
-      return {
-        ...prev,
-        invitedFriends: exists
-          ? prev.invitedFriends.filter((f) => f !== id)
-          : [...prev.invitedFriends, id],
-      };
-    });
-  };
-
-  const createQuest = () => {
-    console.log("QUEST:", eventData);
-    setShowQuest(false);
-  };
-
-  // =====================================================
-  // RENDER
-  // =====================================================
   const stats = profile?.stats;
+
+  if (!isLogged) return null;
 
   return (
     <>
-      <style>{PROFILE_CSS}</style>
+      <style>{STYLE_CSS}</style>
 
-      {/* NAVBAR */}
-      <div className="bottom-navbar">
-        <Link to="/" className="bottom-item text-decoration-none text-reset">
-          <FiHome />
-          <span>home</span>
+      {/* ============================================
+          PILL NAV — Instagram-like, visible siempre
+      ============================================ */}
+      <nav className="sq-bottom-nav" role="navigation" aria-label="Menú inferior">
+        <Link
+          to="/"
+          className={`sq-bottom-nav-item ${isActive("/") ? "active" : ""}`}
+          title="Home"
+          aria-label="Home"
+        >
+          <FiHome size={22} />
         </Link>
 
-        <Link to="/calendar" className="bottom-item text-decoration-none text-reset">
-          <FiCalendar />
-          <span>calendar</span>
+        <Link
+          to="/calendar"
+          className={`sq-bottom-nav-item ${isActive("/calendar") ? "active" : ""}`}
+          title="Calendar"
+          aria-label="Calendar"
+        >
+          <FiCalendar size={22} />
         </Link>
 
         <button
-          className="bottom-item border-0 bg-transparent"
+          type="button"
+          className="sq-bottom-nav-item sq-bottom-nav-create"
           onClick={() => setShowQuest(true)}
+          title="Crear quest"
+          aria-label="Crear quest"
         >
-          <FiPlus />
-          <span>quest</span>
+          <FiPlus size={26} />
         </button>
 
-        <Link to="/events" className="bottom-item text-decoration-none text-reset">
-          <FiMessageSquare />
-          <span>events</span>
+        <Link
+          to="/events"
+          className={`sq-bottom-nav-item ${isActive("/events") ? "active" : ""}`}
+          title="Events"
+          aria-label="Events"
+        >
+          <FiMessageSquare size={22} />
         </Link>
 
         <button
-          className="bottom-item border-0 bg-transparent"
+          type="button"
+          className="sq-bottom-nav-item"
           onClick={() => setShowProfile(true)}
+          title="Profile"
+          aria-label="Profile"
         >
-          <FiUser />
-          <span>profile</span>
+          <FiUser size={22} />
+          {notifUnread > 0 && <span className="sq-bottom-nav-dot" aria-hidden="true" />}
         </button>
-      </div>
+      </nav>
 
-      {/* =====================================================
+      {/* ============================================
           PROFILE MODAL
-      ===================================================== */}
+      ============================================ */}
       <Modal
         show={showProfile}
         onHide={() => setShowProfile(false)}
@@ -381,7 +430,6 @@ export const BottomNavbar = () => {
 
           {!profileLoading && profile && (
             <>
-              {/* AVATAR (read-only display, same as before) */}
               <div className="text-center mb-4">
                 {profile.profile_picture_url ? (
                   <img
@@ -400,7 +448,6 @@ export const BottomNavbar = () => {
                 </div>
               </div>
 
-              {/* STATS */}
               <Row className="g-2 mb-4">
                 <Col xs={6} md={4}>
                   <div className="profile-stat">
@@ -425,7 +472,6 @@ export const BottomNavbar = () => {
                 </Col>
               </Row>
 
-              {/* ACTIVITY BAR */}
               <div className="mb-4 activity-bar">
                 <div className="d-flex justify-content-between align-items-center mb-2">
                   <span className="small text-secondary text-uppercase fw-semibold">
@@ -441,7 +487,6 @@ export const BottomNavbar = () => {
                 </div>
               </div>
 
-              {/* EDITABLE FIELDS */}
               <Form>
                 <Row>
                   <Col md={6} className="mb-3">
@@ -506,7 +551,6 @@ export const BottomNavbar = () => {
                   </Col>
                 </Row>
 
-                {/* ---------- PHOTO (file upload, replaces URL input) ---------- */}
                 <Form.Label>Profile picture</Form.Label>
                 <div className="profile-photo-picker mb-3">
                   {profile.profile_picture_url ? (
@@ -577,9 +621,9 @@ export const BottomNavbar = () => {
         </Modal.Footer>
       </Modal>
 
-      {/* =====================================================
-          QUEST MODAL — now powered by the shared EventModal
-      ===================================================== */}
+      {/* ============================================
+          QUEST MODAL
+      ============================================ */}
       <EventModal
         show={showQuest}
         onHide={() => setShowQuest(false)}
