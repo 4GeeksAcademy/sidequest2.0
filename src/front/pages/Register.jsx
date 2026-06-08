@@ -9,6 +9,7 @@ import {
 	Spinner,
 } from "react-bootstrap";
 import { FiMail, FiLock, FiUserPlus, FiAtSign } from "react-icons/fi";
+import logoSideQuest from "../assets/img/logoSideQuest.png";
 
 // Style coherent avec Friends / Profile / EventModal (dark mode, accents indigo).
 const AUTH_CSS = `
@@ -122,7 +123,7 @@ export const Register = () => {
 					<Card className="sq-auth-card p-4">
 						<h2 className="sq-auth-title text-center mb-1">
 							<img
-								src="src/front/assets/img/logoSideQuest.png"
+								src={logoSideQuest}
 								alt="SideQuest"
 								style={{ filter: "brightness(0) invert(1)", height: "60px", width: "auto" }}
 							/>

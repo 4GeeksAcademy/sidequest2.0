@@ -437,8 +437,8 @@ export const BottomNavbar = () => {
       ============================================ */}
       <nav className="sq-bottom-nav" role="navigation" aria-label="Bottom menu">
         <Link
-          to="/"
-          className={`sq-bottom-nav-item ${isActive("/") ? "active" : ""}`}
+          to="/app"
+          className={`sq-bottom-nav-item ${isActive("/app") ? "active" : ""}`}
           title="Home"
           aria-label="Home"
         >

@@ -10,6 +10,7 @@ import {
 } from "react-bootstrap";
 import useGlobalReducer from "../hooks/useGlobalReducer";
 import { FiAtSign, FiLock, FiLogIn } from "react-icons/fi";
+import logoSideQuest from "../assets/img/logoSideQuest.png";
 
 // Style coherent avec Friends / Profile / EventModal (dark mode, accents indigo)
 const AUTH_CSS = `
@@ -129,7 +130,7 @@ export const Login = () => {
 			}
 
 			dispatch({ type: "set_user", payload: data.user });
-			navigate("/");
+			navigate("/app");
 		} catch (err) {
 			console.error("Login error:", err);
 			setError("Server error");
@@ -147,7 +148,7 @@ export const Login = () => {
 					<Card className="sq-auth-card p-4">
 						<h2 className="sq-auth-title text-center mb-1">
 							<img
-								src="src/front/assets/img/logoSideQuest.png"
+								src={logoSideQuest}
 								alt="SideQuest"
 								style={{ filter: "brightness(0) invert(1)", height: "60px", width: "auto" }} />
 						</h2>

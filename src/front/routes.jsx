@@ -5,6 +5,7 @@ import {
 } from "react-router-dom";
 
 import { Layout } from "./pages/Layout";
+import { LandingPage } from "./pages/LandingPage";
 import { Home } from "./pages/Home";
 import { Single } from "./pages/Single";
 import { Demo } from "./pages/Demo";
@@ -23,7 +24,10 @@ export const router = createBrowserRouter(
       element={<Layout />}
       errorElement={<h1>Not found!</h1>}
     >
-      <Route path="/" element={<Home />} />
+      {/* Public landing page — first screen any visitor sees */}
+      <Route path="/" element={<LandingPage />} />
+      {/* The actual app (fullscreen map). Reached after login/register. */}
+      <Route path="/app" element={<Home />} />
       <Route path="/demo" element={<Demo />} />
       <Route path="/single/:theId" element={<Single />} />
       <Route path="/register" element={<Register />} />

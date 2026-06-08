@@ -6,10 +6,10 @@ import { BottomNavbar } from "../components/ButtonNavbar";
 // Base component that maintains the navbar and footer throughout the page
 // and the scroll-to-top functionality.
 //
-// On the auth pages (/login and /register) we hide both navbars so the
-// auth screen takes the whole viewport — coherent with the fullscreen
-// dark Login design.
-const NAV_FREE_PATHS = ["/login", "/register"];
+// On the landing ("/") and the auth pages (/login, /register) we hide both
+// navbars so each of those screens owns the whole viewport — the landing
+// has its own black header, and the auth screens are fullscreen dark.
+const NAV_FREE_PATHS = ["/", "/login", "/register"];
 
 export const Layout = () => {
     const location = useLocation();

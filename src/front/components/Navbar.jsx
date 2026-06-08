@@ -825,7 +825,7 @@ export const Navbar = () => {
                 <Container fluid className="d-flex justify-content-between align-items-center">
 
                     <div className="d-flex align-items-center gap-2">
-                        <Link to="/" className="text-decoration-none">
+                        <Link to="/app" className="text-decoration-none">
                             <NavbarBs.Brand className="fw-bold fs-3 mb-0">
                                 <img src="/logoSideQuest.png" alt="SideQuest" style={{ filter: "brightness(0) invert(1)", height: "32px", width:"auto" }} />
                             </NavbarBs.Brand>

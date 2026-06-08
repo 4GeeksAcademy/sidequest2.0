@@ -323,7 +323,7 @@ export const Footer = () => {
 
 			{/* NAVBAR */}
 			<div className="bottom-navbar">
-				<Link to="/" className="bottom-item text-decoration-none text-reset">
+				<Link to="/app" className="bottom-item text-decoration-none text-reset">
 					<FiHome />
 					<span>home</span>
 				</Link>
