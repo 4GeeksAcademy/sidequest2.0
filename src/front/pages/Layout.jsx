@@ -4,6 +4,7 @@ import { Navbar } from "../components/Navbar";
 import { Footer } from "../components/Footer";
 import { BottomNavbar } from "../components/ButtonNavbar";
 import { SiteFooter } from "../components/SiteFooter";
+import { Onboarding } from "../components/Onboarding";
 
 // Base component that maintains the navbar and footer throughout the page
 // and the scroll-to-top functionality.
@@ -44,6 +45,12 @@ export const Layout = () => {
                 se renderiza (mapa).                                       */}
             <SiteFooter />
             {!hideNav && <BottomNavbar />}
+            {/* Onboarding tour: se monta SIEMPRE pero internamente
+                decide cuándo mostrarse (logged-in + no completado +
+                ruta apropiada). También escucha el evento
+                "sq:show-onboarding" disparado desde el menú del
+                Navbar para que el usuario pueda repetir el tour. */}
+            <Onboarding />
         </ScrollToTop>
     );
 };

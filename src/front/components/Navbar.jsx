@@ -16,6 +16,9 @@ import Dropdown from "react-bootstrap/Dropdown";
 import InputGroup from "react-bootstrap/InputGroup";
 
 import { NotificationBell } from "./NotificationBell.jsx";
+// Tanda 4C — Re-disparar el tour de onboarding desde el menú.
+// Onboarding.jsx escucha este evento custom y se reabre.
+import { SHOW_ONBOARDING_EVENT } from "./Onboarding.jsx";
 import {
     FiMenu,
     FiMail,
@@ -1009,6 +1012,19 @@ export const Navbar = () => {
 
                                         <Dropdown.Item as={Link} to="/friends">
                                             <FiUsers className="me-2" /> Friends
+                                        </Dropdown.Item>
+
+                                        {/* Tanda 4C — Replay del onboarding tour.
+                                            Dispara un evento custom que el componente
+                                            <Onboarding/> (montado en Layout) escucha
+                                            y vuelve a abrir el modal desde el paso 1.
+                                            Sin reload, sin tocar localStorage. */}
+                                        <Dropdown.Item
+                                            onClick={() => {
+                                                window.dispatchEvent(new Event(SHOW_ONBOARDING_EVENT));
+                                            }}
+                                        >
+                                            <FiHelpCircle className="me-2" /> Take the tour
                                         </Dropdown.Item>
 
                                         <Dropdown.Divider />
