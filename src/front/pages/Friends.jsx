@@ -206,13 +206,31 @@ const FRIENDS_CSS = `
 // =============================================================
 // HELPERS
 // =============================================================
-const initials = (email = "") =>
-  email
+// Genera 1-2 letras a partir del username (o email como fallback
+// legacy). El nombre del param era "email" porque originalmente
+// recibía la dirección; ahora recibe username pero la lógica
+// sigue funcionando porque .split("@")[0] sobre un username no
+// modifica nada (los usernames no llevan "@"). Renombrado para
+// claridad. */
+const initials = (nameOrEmail = "") =>
+  nameOrEmail
     .split("@")[0]
     .split(/[._-]/)
     .map((s) => s.charAt(0).toUpperCase())
     .join("")
     .slice(0, 2) || "?";
+
+// ── HARDENING búsqueda amigos (RGPD + anti-scraping) ─────────
+// MIN_SEARCH_CHARS: mínimo de caracteres antes de disparar la
+// búsqueda. Con 2 chars eras capaz de listar grandes porciones
+// de la base de usuarios; con 3 chars el espacio de búsquedas
+// posibles crece masivamente y se reduce el riesgo de scraping.
+// MAX_SEARCH_RESULTS: techo de resultados que MOSTRAMOS al user
+// (slice client-side). El backend probablemente devuelve más;
+// idealmente también se debería limitar en routes.py (LIMIT 20
+// en la query SQL) pero eso es backend.
+const MIN_SEARCH_CHARS = 3;
+const MAX_SEARCH_RESULTS = 20;
 
 const avatarStyle = (seed) => ({
   width: 44,
@@ -270,7 +288,12 @@ export const Friends = () => {
 
   // ---- debounced search ----
   useEffect(() => {
-    if (searchQ.trim().length < 2) {
+    // HARDENING: requerimos MIN_SEARCH_CHARS (=3) antes de pegarle
+    // al backend. Reduce drásticamente la superficie de scraping
+    // automatizado (con 2 chars un bot tenía 26²+26·10+10² ≈ 1300
+    // queries para barrer; con 3 chars son ~46k queries — mucho
+    // más caro y detectable por rate limit).
+    if (searchQ.trim().length < MIN_SEARCH_CHARS) {
       setSearchResults([]);
       return;
     }
@@ -278,7 +301,14 @@ export const Friends = () => {
     const t = setTimeout(async () => {
       try {
         const r = await apiSearchUsers(searchQ.trim());
-        setSearchResults(r);
+        // HARDENING: ademas del min de chars, cortamos a 20
+        // resultados visibles. Si el backend devuelve 200, el
+        // usuario sólo ve los primeros 20 + un mensaje
+        // pidiendo que afine la búsqueda.
+        const limited = Array.isArray(r) ? r.slice(0, MAX_SEARCH_RESULTS) : [];
+        // Guardamos el total real para mostrar el indicador.
+        limited.__total = Array.isArray(r) ? r.length : 0;
+        setSearchResults(limited);
       } catch (e) {
         setError(e.message);
       } finally {
@@ -428,8 +458,9 @@ export const Friends = () => {
                 type="text"
                 value={searchQ}
                 onChange={(e) => setSearchQ(e.target.value)}
-                placeholder="Search people by username (min. 2 chars)..."
+                placeholder={`Search people by username (min. ${MIN_SEARCH_CHARS} chars)...`}
                 className="bg-dark border-secondary text-light"
+                aria-label="Search people by username"
               />
               {searchQ && (
                 <Button variant="outline-secondary" onClick={() => setSearchQ("")}>
@@ -438,8 +469,15 @@ export const Friends = () => {
               )}
             </InputGroup>
 
+            {/* Tip si el usuario está entre 1 y MIN_SEARCH_CHARS-1 chars */}
+            {searchQ.trim().length > 0 && searchQ.trim().length < MIN_SEARCH_CHARS && (
+              <div className="mt-2 small text-secondary">
+                Type at least {MIN_SEARCH_CHARS} characters to search.
+              </div>
+            )}
+
             {/* search results — visible on every tab */}
-            {searchQ.trim().length >= 2 && (
+            {searchQ.trim().length >= MIN_SEARCH_CHARS && (
               <div className="mt-3">
                 <div className="small text-uppercase text-secondary mb-2 fw-semibold">
                   People found
@@ -495,6 +533,18 @@ export const Friends = () => {
                       </ListGroup.Item>
                     ))}
                   </ListGroup>
+                )}
+
+                {/* Indicador "X of Y" cuando el backend devuelve más
+                    de los que mostramos. Empuja al usuario a afinar
+                    el query en vez de hacer scroll infinito en una
+                    lista parcial. */}
+                {!searching &&
+                  searchResults.__total > searchResults.length && (
+                  <div className="mt-2 small text-secondary fst-italic">
+                    Showing first {searchResults.length} of {searchResults.__total} matches —
+                    type more characters to narrow down.
+                  </div>
                 )}
               </div>
             )}

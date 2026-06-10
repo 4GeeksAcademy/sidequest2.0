@@ -1,5 +1,5 @@
 // src/front/components/NotificationBell.jsx
-import { useState } from "react";
+import { useState, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import Dropdown from "react-bootstrap/Dropdown";
 import Button from "react-bootstrap/Button";
@@ -308,11 +308,57 @@ const BELL_CSS = `
 // MESSAGE RENDERING — one branch per notification type.
 // Keep the copy short; the bell row is narrow.
 // =====================================================
+
+// Fallback chain para mostrar el "actor" de la notificación.
+// Las notificaciones nuevas que crea el backend siempre incluyen
+// `*_username`. PERO las notificaciones VIEJAS (creadas antes de
+// la migración email→username) tienen `*_email` en el payload.
+// Cuando el frontend solo lee `*_username`, esas notificaciones
+// caen al fallback genérico "Someone" — lo que el usuario reporta.
+//
+// Solución sin tocar backend: extraer la parte LOCAL del email
+// (antes del "@") como puente. Es mucho menos sensible que el
+// email completo (no revela el dominio) y suele coincidir con el
+// username que la persona eligió.
+//
+// Ideal: backend hace una migración para rellenar `*_username`
+// en payloads existentes. Mientras, este fallback resuelve el UX.
+const localPartOf = (emailLike) => {
+    if (!emailLike || typeof emailLike !== "string") return null;
+    const at = emailLike.indexOf("@");
+    return at > 0 ? emailLike.slice(0, at) : emailLike;
+};
+
+const resolveActor = (...candidates) => {
+    for (const c of candidates) {
+        if (c && typeof c === "string" && c.trim()) return c.trim();
+    }
+    return null;
+};
+
 const renderMessage = (n) => {
     const p = n.payload || {};
-    const from   = p.from_username       || "Someone";
-    const title  = p.event_title         || "an event";
-    const target = p.suggested_username  || p.responder_username || "someone";
+    // Sender (quien dispara la notificación)
+    const from =
+        resolveActor(
+            p.from_username,
+            p.sender_username,
+            // Bridge para payloads legacy:
+            localPartOf(p.from_email),
+            localPartOf(p.sender_email),
+        ) || "A user";
+
+    const title  = p.event_title || "an event";
+
+    // Target / persona afectada (suggested user, responder)
+    const target =
+        resolveActor(
+            p.suggested_username,
+            p.responder_username,
+            // Bridge para payloads legacy:
+            localPartOf(p.suggested_user_email),
+            localPartOf(p.responder_email),
+        ) || "another user";
 
     switch (n.type) {
         case "friend_request": {
@@ -452,6 +498,19 @@ export const NotificationBell = () => {
     // doesn't get reset every time useNotifications refetches.
     const [showAll, setShowAll] = useState(false);
 
+    // Set de notif-ids actualmente en proceso. Evita que un usuario
+    // que pulsa rápido un botón de RSVP (going/maybe/not_going) o
+    // de aceptar/refusar request mande N requests al backend antes
+    // de que llegue la primera respuesta. Es un ref (no state)
+    // porque no necesitamos re-render — solo bloquear duplicados.
+    const inFlightRef = useRef(new Set());
+    const guardInFlight = async (notifId, fn) => {
+        if (inFlightRef.current.has(notifId)) return; // ya en proceso
+        inFlightRef.current.add(notifId);
+        try { await fn(); }
+        finally { inFlightRef.current.delete(notifId); }
+    };
+
     // ----- friend_request -----
     // Action handlers MARK the notif as read (not delete) so the user can
     // still scroll back and see "I accepted X's request yesterday". The
@@ -479,19 +538,20 @@ export const NotificationBell = () => {
     };
 
     // ----- event_invite / event_public (3 buttons via /respond) -----
-    const respondEvent = async (n, response) => {
-        const eid = (n.payload || {}).event_id;
-        if (!eid) return;
-        const res = await fetchWithRetry(
-            `${API_URL}/api/events/${eid}/respond`,
-            {
-                method: "PUT",
-                headers: authHeaders(),
-                body: JSON.stringify({ response }),
-            }
-        );
-        if (res.ok) { markAsRead(n.id); fetchNotifications(); }
-    };
+    const respondEvent = (n, response) =>
+        guardInFlight(`evt-${n.id}-${response}`, async () => {
+            const eid = (n.payload || {}).event_id;
+            if (!eid) return;
+            const res = await fetchWithRetry(
+                `${API_URL}/api/events/${eid}/respond`,
+                {
+                    method: "PUT",
+                    headers: authHeaders(),
+                    body: JSON.stringify({ response }),
+                }
+            );
+            if (res.ok) { markAsRead(n.id); fetchNotifications(); }
+        });
 
     // ----- invite_suggestion (creator-only actions) -----
     const approveSuggestion = async (n) => {

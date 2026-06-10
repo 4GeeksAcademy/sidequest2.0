@@ -3,6 +3,9 @@ import ScrollToTop from "../components/ScrollToTop";
 import { Navbar } from "../components/Navbar";
 import { Footer } from "../components/Footer";
 import { BottomNavbar } from "../components/ButtonNavbar";
+import { SiteFooter } from "../components/SiteFooter";
+import { Onboarding } from "../components/Onboarding";
+
 // Base component that maintains the navbar and footer throughout the page
 // and the scroll-to-top functionality.
 //
@@ -17,9 +20,37 @@ export const Layout = () => {
 
     return (
         <ScrollToTop>
+            {/* SEMÁNTICA: el Navbar es semánticamente un <header> global
+                (lo envolvemos dentro del propio componente Navbar para
+                no duplicarlo aquí). Aquí marcamos el área principal con
+                <main role="main"> — Google y los lectores de pantalla
+                saltan directamente al contenido cuando el usuario pulsa
+                "saltar a contenido". UN <main> por página es el
+                estándar HTML5; por eso LandingPage cambia su <main>
+                interno a <section> para no anidar dos <main>. */}
             {!hideNav && <Navbar />}
-            <Outlet />
+            <main id="main-content" role="main">
+                <Outlet />
+            </main>
+            {/* SiteFooter: enlaces legales (Terms / Privacy / Legal Notice)
+                + copyright. Aparece en todas las páginas EXCEPTO:
+                  - "/"      → landing tiene su propio lp-footer
+                  - "/app"   → mapa fullscreen, no scrollea
+                  - "/map"   → idem
+                  - "/login", "/register" → auth screens fullscreen
+                El propio componente decide ocultarse en esas rutas via
+                HIDE_ON_PATHS, así que aquí lo montamos siempre.
+                Los enlaces legales SIEMPRE son accesibles desde el
+                hamburger menu del Navbar incluso cuando el footer no
+                se renderiza (mapa).                                       */}
+            <SiteFooter />
             {!hideNav && <BottomNavbar />}
+            {/* Onboarding tour: se monta SIEMPRE pero internamente
+                decide cuándo mostrarse (logged-in + no completado +
+                ruta apropiada). También escucha el evento
+                "sq:show-onboarding" disparado desde el menú del
+                Navbar para que el usuario pueda repetir el tour. */}
+            <Onboarding />
         </ScrollToTop>
     );
 };

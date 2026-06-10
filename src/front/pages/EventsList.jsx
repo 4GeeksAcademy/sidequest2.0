@@ -208,6 +208,14 @@ const ResponseBar = ({ eventId, myStatus, initialRsvp, onChanged }) => {
   const handleClick = async (e, value) => {
     e.stopPropagation();
     if (saving) return;
+    // IDEMPOTENCIA cliente: si el usuario clica la opción que ya
+    // tiene activa, NO llamamos al backend. Backend también tiene
+    // la check (defense in depth), pero evitamos round-trip + spam
+    // de logs + cualquier race condition. Solo aplica si NO es una
+    // invitación pendiente — en ese caso aceptar "going" SÍ debe
+    // disparar la transición invitación→participante aunque el
+    // "rsvp" técnicamente coincida.
+    if (rsvp === value && myStatus !== "pending") return;
     setSaving(true);
     try {
       const data = await apiRespond(eventId, value);
@@ -411,26 +419,34 @@ export const EventsList = () => {
             </div>
           </div>
         ) : (
-          <Row className="g-3">
+          <Row className="g-3" role="list" aria-label="Your events">
             {filtered.map((e) => (
-              <Col md={6} lg={4} key={e.id}>
+              <Col md={6} lg={4} key={e.id} role="listitem">
+                {/* SEMÁNTICA SEO: cada card es un <article> con su propio
+                    título (h2). Google trata cada uno como una pieza de
+                    contenido discreta — mejor indexación de eventos
+                    individuales. Mismo Card de React-Bootstrap, sólo
+                    cambia el tag HTML renderizado de <div> a <article>
+                    vía la prop `as`. */}
                 <Card
+                  as="article"
                   className="event-card h-100"
                   onClick={() => openEvent(e.id)}
+                  aria-label={`Event: ${e.title || "untitled"}`}
                 >
                   {e.image ? (
-                    <img src={e.image} alt={e.title || "event"} className="event-card-img" />
+                    <img src={e.image} alt={e.title ? `Cover of ${e.title}` : "Event cover"} className="event-card-img" />
                   ) : (
-                    <div className="event-card-noimg">
-                      <img src="/logoSideQuest.png" alt="SideQuest" />
+                    <div className="event-card-noimg" aria-hidden="true">
+                      <img src="/logoSideQuest.png" alt="" />
                     </div>
                   )}
 
                   <Card.Body>
                     <div className="d-flex justify-content-between align-items-start gap-2 mb-2">
-                      <strong className="text-light text-truncate">
+                      <h2 className="text-light text-truncate fs-6 fw-bold mb-0">
                         {e.title || "(untitled event)"}
-                      </strong>
+                      </h2>
                       {statusPill(e)}
                     </div>
 
