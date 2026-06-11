@@ -125,6 +125,14 @@ const TYPE_META = {
         icon: <FiClock size={18} />,
         navigateTo: (p) => p.event_id ? `/map?event=${p.event_id}` : "/events",
     },
+    // Tanda 7B — Pregunta post-evento al creador: "¿pasó como previsto?".
+    // Sin respuesta → botones Yes/No. Con payload.response ("yes"/"no")
+    // la fila se queda mostrando el resultado, igual que friend_request.
+    event_confirmation: {
+        avatarClass: "confirm",
+        icon: <FiHelpCircle size={18} />,
+        navigateTo: () => "/events",
+    },
 };
 
 const DEFAULT_META = {
@@ -226,6 +234,7 @@ const BELL_CSS = `
 .sq-bell-avatar.suggestion   { background: linear-gradient(135deg, #facc15, #f97316); color: #fff; }
 .sq-bell-avatar.rsvp         { background: linear-gradient(135deg, #22d3ee, #4f46e5); color: #fff; }
 .sq-bell-avatar.reminder     { background: linear-gradient(135deg, #6366f1, #22d3ee); color: #fff; }
+.sq-bell-avatar.confirm      { background: linear-gradient(135deg, #22c55e, #6366f1); color: #fff; }
 
 .sq-bell-body { flex: 1; min-width: 0; }
 .sq-bell-row1 {
@@ -463,6 +472,20 @@ const renderMessage = (n) => {
             );
         }
 
+        case "event_confirmation": {
+            // Tanda 7B — backend stamps payload.response ("yes"/"no") once
+            // the creator answers; the row then shows the outcome instead
+            // of the question (same pattern as friend_request.status).
+            const r = p.response;
+            if (r === "yes") {
+                return (<>You confirmed "<strong>{title}</strong>" happened as planned</>);
+            }
+            if (r === "no") {
+                return (<>You marked "<strong>{title}</strong>" as not happened</>);
+            }
+            return (<>Did "<strong>{title}</strong>" happen as planned?</>);
+        }
+
         default:
             return "You have a new notification";
     }
@@ -574,6 +597,24 @@ export const NotificationBell = () => {
         if (res.ok) { markAsRead(n.id); fetchNotifications(); }
     };
 
+    // ----- event_confirmation (creator answers "did it happen?") -----
+    // Tanda 7B — guardInFlight evita doble click; el backend estampa
+    // payload.response y marca leída, así el refetch muestra el resultado.
+    const confirmEvent = (n, happened) =>
+        guardInFlight(`conf-${n.id}`, async () => {
+            const eid = (n.payload || {}).event_id;
+            if (!eid) return;
+            const res = await fetchWithRetry(
+                `${API_URL}/api/events/${eid}/confirm`,
+                {
+                    method: "PUT",
+                    headers: authHeaders(),
+                    body: JSON.stringify({ happened }),
+                }
+            );
+            if (res.ok) { fetchNotifications(); }
+        });
+
     // Click anywhere on the row → mark read + navigate (per-type target).
     const handleClickNotif = (n) => {
         if (!n.is_read) markAsRead(n.id);
@@ -633,6 +674,10 @@ export const NotificationBell = () => {
                             const isFriendReq  = n.type === "friend_request" && !friendReqStatus;
                             const isEventInv   = n.type === "event_invite" || n.type === "event_public";
                             const isSuggestion = n.type === "invite_suggestion";
+                            // Tanda 7B — pregunta de confirmación aún sin
+                            // responder (payload.response ausente).
+                            const isConfirmation =
+                                n.type === "event_confirmation" && !(n.payload || {}).response;
 
                             return (
                                 <div
@@ -693,6 +738,19 @@ export const NotificationBell = () => {
                                                     <Button size="sm" className="sq-bell-btn refuse"
                                                         onClick={(e) => { e.stopPropagation(); refuseSuggestion(n); }}>
                                                         <FiX /> Refuse
+                                                    </Button>
+                                                </>
+                                            )}
+
+                                            {isConfirmation && (
+                                                <>
+                                                    <Button size="sm" className="sq-bell-btn accept"
+                                                        onClick={(e) => { e.stopPropagation(); confirmEvent(n, true); }}>
+                                                        <FiThumbsUp /> Yes, it happened
+                                                    </Button>
+                                                    <Button size="sm" className="sq-bell-btn refuse"
+                                                        onClick={(e) => { e.stopPropagation(); confirmEvent(n, false); }}>
+                                                        <FiThumbsDown /> No, it didn't
                                                     </Button>
                                                 </>
                                             )}

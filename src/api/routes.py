@@ -1,6 +1,16 @@
+import os
+
+# Tanda 7V — subida de media a Cloudinary (la lib ya estaba en el
+# Pipfile sin usar). Se configura sola desde la env var CLOUDINARY_URL.
+import cloudinary
+import cloudinary.uploader
+
 from flask import Blueprint, request, jsonify
 from flask_cors import CORS
-from flask_jwt_extended import create_access_token, jwt_required, get_jwt_identity
+from flask_jwt_extended import (
+    create_access_token, jwt_required, get_jwt_identity,
+    set_access_cookies, unset_jwt_cookies, get_csrf_token,
+)
 from werkzeug.security import generate_password_hash, check_password_hash
 from sqlalchemy import text, bindparam, or_
 from api.models import (
@@ -8,10 +18,66 @@ from api.models import (
     Notification, EventInvitation, InviteSuggestion,
     ChatRoomMembership, event_participants,
 )
+# Tanda 7F — Socket.IO: instancia global + helpers (ver api/sockets.py).
+from api.sockets import socketio, emit_to_user, allowed_origins
 from datetime import datetime, timedelta
 
 api = Blueprint('api', __name__)
-CORS(api)
+
+# Tanda 7D — Con cookies de sesión (credentials) el navegador rechaza el
+# comodín "*": hay que enumerar orígenes permitidos. En producción
+# (Render) el propio Flask sirve el frontend (mismo origen) y CORS ni
+# interviene; esta lista cubre el desarrollo en Codespaces y en local.
+CORS(
+    api,
+    supports_credentials=True,
+    origins=[
+        r"https://.*\.app\.github\.dev",
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "https://localhost:3000",
+    ],
+)
+
+
+# Tanda 7D — JWT en cookies httpOnly (el token deja de vivir en
+# localStorage, donde cualquier XSS podía leerlo).
+#
+# app.py es intocable en este proyecto, pero un blueprint puede inyectar
+# config en la app durante su registro: record_once corre UNA sola vez,
+# antes de servir la primera request — mismo efecto que escribirlo en
+# app.py sin tocarlo.
+@api.record_once
+def _configure_jwt_cookies(state):
+    app = state.app
+    # "cookies" primero: el navegador adjunta la cookie httpOnly solo.
+    # "headers" se mantiene como segunda vía para Postman / clientes API
+    # (Authorization: Bearer <token del body del login>).
+    app.config["JWT_TOKEN_LOCATION"] = ["cookies", "headers"]
+    app.config["JWT_ACCESS_COOKIE_NAME"] = "sq_access_token"
+    # Solo HTTPS — Codespaces y Render siempre lo son. (En un http://
+    # plano el navegador no guardaría la cookie; ahí usa el flujo
+    # Bearer de Postman.)
+    app.config["JWT_COOKIE_SECURE"] = True
+    # En dev el front (puerto 3000) y la API (3001) viven en subdominios
+    # distintos de app.github.dev → la cookie debe ser SameSite=None
+    # para viajar cross-origin. En Render (mismo origen) también vale.
+    app.config["JWT_COOKIE_SAMESITE"] = "None"
+    # Double-submit CSRF: además de la cookie httpOnly, el cliente debe
+    # mandar el header X-CSRF-TOKEN en POST/PUT/PATCH/DELETE. Como en
+    # dev el front no puede leer cookies del dominio de la API, el
+    # login devuelve csrf_token también en el body. El CSRF solo aplica
+    # a la vía cookie — la vía Bearer (Postman) queda exenta.
+    app.config["JWT_COOKIE_CSRF_PROTECT"] = True
+
+
+# Tanda 7F — Socket.IO sin tocar app.py: init_app envuelve app.wsgi_app
+# con el middleware de socket.io, así el gunicorn / flask run existentes
+# sirven también el tráfico de /socket.io. El handshake se autentica con
+# la cookie httpOnly (ver api/sockets.py).
+@api.record_once
+def _init_socketio(state):
+    socketio.init_app(state.app, cors_allowed_origins=allowed_origins())
 
 
 # How long a sender can edit their own chat message after posting it.
@@ -36,6 +102,13 @@ def _create_notification(user_id, notif_type, payload):
         payload=payload or {}, is_read=False,
     )
     db.session.add(notif)
+    # Tanda 7F — ping en tiempo real a la sala personal del destinatario.
+    # Único punto de emisión para TODOS los tipos de notificación. El
+    # cliente refetchea /notifications al recibirlo (patrón ping→refetch):
+    # si esta transacción aún no comiteó cuando llega el refetch, el poll
+    # de fallback lo recoge en el siguiente tick — nunca hay estado
+    # inventado en el cliente.
+    emit_to_user(user_id, "notification:new", {"type": notif_type})
     return notif
 
 
@@ -254,6 +327,89 @@ def _dispatch_my_reminders(user_id):
 
 
 # =========================================================
+# PAST-EVENT HELPERS (internal) — Tanda 7B
+# =========================================================
+
+def _event_datetime(event):
+    """Parse the event's string date/time columns into a datetime.
+
+    Returns None when the strings are malformed — callers must treat
+    that as "not past" so a single bad row never blocks anything.
+    """
+    try:
+        return datetime.strptime(
+            "{} {}".format(event.date, (event.time or "")[:5]),
+            "%Y-%m-%d %H:%M",
+        )
+    except (ValueError, TypeError):
+        # Fallback: date-only (event counts as past from midnight on).
+        try:
+            return datetime.strptime(event.date, "%Y-%m-%d")
+        except (ValueError, TypeError):
+            return None
+
+
+def _event_is_past(event):
+    """True when the event's date+time is strictly behind utcnow().
+
+    utcnow() for coherence with the reminder dispatcher above, which
+    compares the same string columns against the same clock.
+    """
+    dt = _event_datetime(event)
+    return dt is not None and dt < datetime.utcnow()
+
+
+def _dispatch_my_event_confirmations(user_id):
+    """Per-creator opportunistic confirmation dispatcher.
+
+    Same lazy pattern as _dispatch_my_reminders: called as a side-effect
+    from `GET /api/notifications` and `/notifications/unread-count`, so
+    the question pops up in the bell shortly after the event ends —
+    no cron needed.
+
+    For every PAST event the user created whose `happened` is still
+    NULL, create ONE `event_confirmation` notification asking whether
+    the event took place as planned. Idempotent: events that already
+    have a confirmation notif for this user are skipped, so answering
+    "later" (leaving the notif unread) never duplicates it.
+    """
+    pending = Event.query.filter(
+        Event.creator_id == user_id,
+        Event.happened.is_(None),
+    ).all()
+    if not pending:
+        return
+
+    existing = Notification.query.filter_by(
+        user_id=user_id, type="event_confirmation",
+    ).all()
+    asked_event_ids = {
+        (n.payload or {}).get("event_id") for n in existing
+    }
+
+    created_any = False
+    for event in pending:
+        if event.id in asked_event_ids:
+            continue
+        if not _event_is_past(event):
+            continue
+        _create_notification(
+            user_id=user_id,
+            notif_type="event_confirmation",
+            payload={
+                "event_id":    event.id,
+                "event_title": event.title,
+                "event_date":  event.date,
+                "event_time":  event.time,
+            },
+        )
+        created_any = True
+
+    if created_any:
+        db.session.commit()
+
+
+# =========================================================
 # CHAT MEMBERSHIP HELPER (internal)
 # =========================================================
 
@@ -273,6 +429,25 @@ def _can_access_room(room, user_id):
     if room.type == "dm":
         return user_id in (room.user_a_id, room.user_b_id)
     return False
+
+
+def _room_member_ids(room):
+    """User ids con acceso a la sala (participantes del evento o par del DM)."""
+    if room.type == "event":
+        return [p.id for p in room.event.participants] if room.event else []
+    return [uid for uid in (room.user_a_id, room.user_b_id) if uid is not None]
+
+
+def _emit_chat_ping(room):
+    """Tanda 7F — aviso en tiempo real a todos los miembros de la sala.
+
+    Se emite DESPUÉS del commit del mensaje. Incluye al emisor a
+    propósito: así sus otras pestañas/dispositivos también refrescan la
+    lista de chats. Payload mínimo {room_id}; el cliente refetchea por
+    la API REST (patrón ping→refetch).
+    """
+    for uid in _room_member_ids(room):
+        emit_to_user(uid, "chat:message", {"room_id": room.id})
 
 
 # =========================================================
@@ -331,6 +506,11 @@ def register():
 
     if not email or not password or not username:
         return jsonify({"msg": "Email, username and password are required"}), 400
+
+    # Tanda 7D — misma regla mínima que reset-password (antes register
+    # aceptaba contraseñas de 1 carácter).
+    if not isinstance(password, str) or len(password) < 6:
+        return jsonify({"msg": "Password must be at least 6 characters"}), 400
 
     # Quick syntactic check on username — alphanumeric + . _ - allowed.
     import re
@@ -396,7 +576,92 @@ def login():
         identity=str(user.id),
         expires_delta=JWT_LIFETIME,
     )
-    return jsonify({"token": access_token, "user": user.serialize()}), 200
+
+    # Tanda 7D — la sesión del navegador es la cookie httpOnly (el JS no
+    # puede leerla → inmune a exfiltración por XSS). En el body viajan:
+    #   - user        → datos de UI que el front persiste
+    #   - csrf_token  → anti-CSRF double-submit (header X-CSRF-TOKEN);
+    #                   va en el body porque en dev el front no puede
+    #                   leer cookies del dominio de la API
+    #   - token       → SOLO para Postman/clientes API (vía Bearer).
+    #                   El frontend web lo ignora y no lo persiste.
+    resp = jsonify({
+        "msg":        "Login successful",
+        "user":       user.serialize(),
+        "csrf_token": get_csrf_token(access_token),
+        "token":      access_token,
+    })
+    set_access_cookies(
+        resp, access_token,
+        max_age=int(JWT_LIFETIME.total_seconds()),
+    )
+    return resp, 200
+
+
+# =========================================================
+# LOGOUT — Tanda 7D
+# =========================================================
+
+@api.route('/logout', methods=['POST'])
+def logout():
+    """Borra las cookies de sesión (httpOnly + csrf).
+
+    Sin @jwt_required a propósito: un logout debe funcionar aunque la
+    cookie ya haya expirado — siempre responde 200 y deja el navegador
+    limpio.
+    """
+    resp = jsonify({"msg": "Logged out"})
+    unset_jwt_cookies(resp)
+    return resp, 200
+
+
+# =========================================================
+# MEDIA UPLOAD — Tanda 7V (Cloudinary)
+# =========================================================
+# Hasta ahora las imágenes (perfil, evento, chat) se guardaban como
+# base64 DENTRO de la base de datos y viajaban completas en cada
+# respuesta (GET /events con 20 eventos con foto ≈ varios MB). Este
+# endpoint las sube a Cloudinary y devuelve la URL hosteada: en la
+# base solo se guarda la URL (~100 bytes) y el navegador descarga la
+# imagen del CDN, cacheada. Los datos base64 ya existentes siguen
+# funcionando (los campos son Text y el front pinta ambos formatos).
+
+@api.route('/upload', methods=['POST'])
+@jwt_required()
+def upload_media():
+    """Body: {"data_url": "data:image/...;base64,....", "kind": "profile"}
+
+    kind ∈ profile | event | chat | audio → carpeta en Cloudinary.
+    Devuelve {"url": "https://res.cloudinary.com/..."}.
+    """
+    if not os.getenv("CLOUDINARY_URL"):
+        # Sin credenciales el front cae solo al modo legacy (base64
+        # directo a la base) — la app no se rompe, solo no optimiza.
+        return jsonify({"msg": "Media uploads not configured (missing CLOUDINARY_URL)"}), 503
+
+    body = request.get_json() or {}
+    data_url = body.get("data_url")
+    kind = body.get("kind") if body.get("kind") in (
+        "profile", "event", "chat", "audio") else "misc"
+
+    if not isinstance(data_url, str) or not data_url.startswith("data:"):
+        return jsonify({"msg": "data_url (base64 data URL) is required"}), 400
+    # ~12 MB de base64 ≈ 9 MB reales — tope generoso (el front ya
+    # comprime imágenes a ~250-500 KB antes de llegar aquí).
+    if len(data_url) > 12_000_000:
+        return jsonify({"msg": "File too large"}), 413
+
+    try:
+        result = cloudinary.uploader.upload(
+            data_url,
+            folder="sidequest/{}".format(kind),
+            # "auto": acepta imagen y audio/video (notas de voz del chat).
+            resource_type="auto",
+        )
+    except Exception:
+        return jsonify({"msg": "Upload failed"}), 502
+
+    return jsonify({"url": result.get("secure_url")}), 201
 
 
 # =========================================================
@@ -545,7 +810,12 @@ def create_event():
 @jwt_required()
 def get_events():
     current_user_id = int(get_jwt_identity())
-    all_events = Event.query.all()
+    # Tanda 7C — Los eventos que el creador marcó como NO realizados
+    # (happened == False) desaparecen de la UI (mapa, listas, calendario)
+    # pero permanecen en la base como "creado pero cancelado".
+    all_events = Event.query.filter(
+        or_(Event.happened.is_(None), Event.happened.is_(True))
+    ).all()
     visible = []
     for e in all_events:
         if e.creator_id == current_user_id:
@@ -987,6 +1257,18 @@ def delete_event(event_id):
     if event.creator_id != current_user_id:
         return jsonify({"msg": "Only the creator can delete this event"}), 403
 
+    # Tanda 7B/7C — Past events are history: they can NEVER be deleted.
+    # The creator answers the event_confirmation notification instead
+    # (PUT /events/<id>/confirm). Events marked as NOT happened
+    # (happened == False) disappear from the UI (get_events filters
+    # them out) but stay in the database as a "created but cancelled"
+    # record — useful data for later.
+    if _event_is_past(event):
+        return jsonify({
+            "msg": "Past events cannot be deleted. Please confirm whether "
+                   "the event took place from your notifications instead."
+        }), 409
+
     creator = db.session.get(User, current_user_id)
 
     # Notify participants BEFORE deletion — once the event row is gone we
@@ -1008,7 +1290,8 @@ def delete_event(event_id):
     _delete_event_payload_notifications(
         event_id,
         types=("event_updated", "event_removed",
-               "rsvp_changed", "event_reminder"),
+               "rsvp_changed", "event_reminder",
+               "event_confirmation"),
     )
 
     EventInvitation.query.filter_by(event_id=event_id).delete()
@@ -1022,6 +1305,56 @@ def delete_event(event_id):
     db.session.delete(event)
     db.session.commit()
     return jsonify({"msg": "Event deleted"}), 200
+
+
+# Tanda 7B — El creador responde a la pregunta "¿el evento pasó como
+# previsto?" que le llega por la notificación event_confirmation.
+@api.route('/events/<int:event_id>/confirm', methods=['PUT'])
+@jwt_required()
+def confirm_event(event_id):
+    """Body: {"happened": true | false}.
+
+    Only the creator can answer, and only once the event is past.
+    The answer is stored on event.happened and the matching
+    event_confirmation notification is stamped with payload.response
+    ("yes"/"no") + marked read — same keep-the-row pattern as
+    friend_request.status, so the bell can show the outcome instead
+    of resurrecting the question on the next poll.
+    """
+    current_user_id = int(get_jwt_identity())
+    event = db.session.get(Event, event_id)
+    if not event:
+        return jsonify({"msg": "Event not found"}), 404
+    if event.creator_id != current_user_id:
+        return jsonify({"msg": "Only the creator can confirm this event"}), 403
+    if not _event_is_past(event):
+        return jsonify({"msg": "You can only confirm an event after it has taken place"}), 409
+
+    body = request.get_json() or {}
+    happened = body.get("happened")
+    if not isinstance(happened, bool):
+        return jsonify({"msg": "`happened` must be true or false"}), 400
+
+    event.happened = happened
+
+    # Stamp + mark read the confirmation notif(s) for this event.
+    notifs = Notification.query.filter_by(
+        user_id=current_user_id, type="event_confirmation",
+    ).all()
+    for n in notifs:
+        if (n.payload or {}).get("event_id") == event_id:
+            payload = dict(n.payload or {})
+            payload["response"] = "yes" if happened else "no"
+            # Reasignar un dict NUEVO — mutar el JSON in-place no dispara
+            # el change-tracking de SQLAlchemy y el stamp no se guardaría.
+            n.payload = payload
+            n.is_read = True
+
+    db.session.commit()
+    return jsonify({
+        "msg": "Event confirmed" if happened else "Event marked as not happened",
+        "event": event.serialize(current_user_id),
+    }), 200
 
 
 @api.route('/events/<int:event_id>/participants/<int:user_id>', methods=['DELETE'])
@@ -1470,7 +1803,19 @@ def list_friends():
         (Friendship.requester_id == current_user_id) | (
             Friendship.addressee_id == current_user_id)
     ).all()
-    return jsonify([f.serialize(current_user_id=current_user_id) for f in friendships]), 200
+    data = [f.serialize(current_user_id=current_user_id) for f in friendships]
+
+    # Tanda 7C — Reward visible entre amigos: añadimos el nivel de
+    # actividad de cada amigo (aro de color del avatar en el frontend).
+    # Una sola query agrupada para toda la lista — ver _activity_levels_for.
+    friend_ids = [d["friend"]["id"] for d in data if d.get("friend")]
+    levels = _activity_levels_for(friend_ids)
+    for d in data:
+        if d.get("friend"):
+            d["friend"]["activity_level"] = levels.get(
+                d["friend"]["id"], "Low activity")
+
+    return jsonify(data), 200
 
 
 @api.route('/friends/requests', methods=['GET'])
@@ -1694,41 +2039,105 @@ def search_users():
 # PROFILE
 # =========================================================
 
-def _compute_stats(user_id):
-    events_created_count = Event.query.filter(
-        Event.creator_id == user_id).count()
+# Tanda 7C — Niveles de actividad = etapas de la reward. La paleta del
+# frontend (aro del avatar) está mapeada 1:1 a estos strings:
+#   "Low activity"  → aro gris      (< 2 eventos/semana en 4 semanas)
+#   "Active"        → aro cian      (2 - 3 eventos/semana)
+#   "Very active"   → aro verde     (≥ 3 eventos/semana)
+def _level_from_avg(avg_per_week):
+    if avg_per_week < 2:
+        return "Low activity"
+    if avg_per_week < 3:
+        return "Active"
+    return "Very active"
+
+
+def _activity_levels_for(user_ids):
+    """Activity level for MANY users in one grouped query.
+
+    Used by list_friends so the reward ring shows on every friend card
+    without computing a full per-friend profile (no N+1). Same window
+    and rules as _compute_stats: last 4 weeks, past events only, and
+    events marked as not-happened count for nothing.
+    """
+    user_ids = [uid for uid in user_ids if uid is not None]
+    if not user_ids:
+        return {}
+
     today = datetime.utcnow().date()
-
-    all_events = Event.query.all()
-    participated_all = [e for e in all_events if user_id in [
-        p.id for p in e.participants]]
-
-    def _is_past(e):
-        try:
-            return datetime.strptime(e.date, "%Y-%m-%d").date() <= today
-        except (ValueError, TypeError):
-            return False
-
-    participated = [e for e in participated_all if _is_past(e)]
-    events_participated_count = len(participated)
-
     window_start = today - timedelta(weeks=4)
-    recent_count = 0
-    for e in participated:
-        try:
-            event_date = datetime.strptime(e.date, "%Y-%m-%d").date()
-            if window_start <= event_date <= today:
-                recent_count += 1
-        except (ValueError, TypeError):
-            continue
+
+    # Las fechas son strings ISO ("YYYY-MM-DD"): comparan correctamente
+    # como texto plano, así el filtro corre entero en SQL.
+    rows = db.session.execute(
+        text(
+            "SELECT ep.user_id, COUNT(*) "
+            "FROM event_participants ep "
+            "JOIN event e ON e.id = ep.event_id "
+            "WHERE ep.user_id IN :uids "
+            "  AND e.date >= :wstart AND e.date <= :today "
+            "  AND (e.happened IS NULL OR e.happened = :t) "
+            "GROUP BY ep.user_id"
+        ).bindparams(bindparam("uids", expanding=True)),
+        {
+            "uids":   user_ids,
+            "wstart": window_start.isoformat(),
+            "today":  today.isoformat(),
+            "t":      True,
+        },
+    ).fetchall()
+    recent_counts = {row[0]: row[1] for row in rows}
+
+    return {
+        uid: _level_from_avg(round(recent_counts.get(uid, 0) / 4.0, 2))
+        for uid in user_ids
+    }
+
+
+def _compute_stats(user_id):
+    """Aggregate activity stats for one user.
+
+    Tanda 7C — two changes vs the original:
+      * Events the creator marked as NOT happened (happened == False)
+        count for NOTHING: ni created, ni participated, ni nivel. Siguen
+        en la base como "creado pero cancelado" (dato para más adelante).
+      * The old version loaded EVERY event in the database to count one
+        user's participations; rewritten as aggregate SQL so profiles and
+        the friends list stay fast as the table grows.
+    """
+    today = datetime.utcnow().date()
+    window_start = today - timedelta(weeks=4)
+
+    events_created_count = Event.query.filter(
+        Event.creator_id == user_id,
+        or_(Event.happened.is_(None), Event.happened.is_(True)),
+    ).count()
+
+    # Participated = eventos pasados (date <= hoy, mismo criterio que la
+    # versión anterior) donde el user figura en event_participants y el
+    # evento no fue cancelado. Fechas ISO → comparación como string.
+    row = db.session.execute(
+        text(
+            "SELECT COUNT(*), "
+            "       SUM(CASE WHEN e.date >= :wstart THEN 1 ELSE 0 END) "
+            "FROM event_participants ep "
+            "JOIN event e ON e.id = ep.event_id "
+            "WHERE ep.user_id = :uid "
+            "  AND e.date <= :today "
+            "  AND (e.happened IS NULL OR e.happened = :t)"
+        ),
+        {
+            "uid":    user_id,
+            "wstart": window_start.isoformat(),
+            "today":  today.isoformat(),
+            "t":      True,
+        },
+    ).fetchone()
+    events_participated_count = int(row[0] or 0)
+    recent_count = int(row[1] or 0)
 
     activity_avg_per_week = round(recent_count / 4.0, 2)
-    if activity_avg_per_week < 2:
-        activity_level = "Low activity"
-    elif activity_avg_per_week < 3:
-        activity_level = "Active"
-    else:
-        activity_level = "Very active"
+    activity_level = _level_from_avg(activity_avg_per_week)
     activity_percent = min(100, int((activity_avg_per_week / 5.0) * 100))
 
     return {
@@ -2016,6 +2425,7 @@ def post_room_message(room_id):
     membership = _get_or_create_membership(room.id, current_user_id)
     membership.last_read_at = datetime.utcnow()
     db.session.commit()
+    _emit_chat_ping(room)
     return jsonify({"msg": "Message sent", "message": msg.serialize()}), 201
 
 
@@ -2049,6 +2459,7 @@ def edit_room_message(room_id, msg_id):
     msg.text = new_text
     msg.edited_at = datetime.utcnow()
     db.session.commit()
+    _emit_chat_ping(room)
     return jsonify({"msg": "Message updated", "message": msg.serialize()}), 200
 
 
@@ -2075,6 +2486,7 @@ def delete_room_message(room_id, msg_id):
     msg.media_url = None
     msg.media_type = None
     db.session.commit()
+    _emit_chat_ping(room)
     return jsonify({"msg": "Message deleted", "message": msg.serialize()}), 200
 
 
@@ -2135,6 +2547,7 @@ def post_event_message(event_id):
     membership = _get_or_create_membership(room.id, current_user_id)
     membership.last_read_at = datetime.utcnow()
     db.session.commit()
+    _emit_chat_ping(room)
     return jsonify({"msg": "Message sent", "message": msg.serialize()}), 201
 
 
@@ -2153,6 +2566,12 @@ def list_notifications():
         _dispatch_my_reminders(current_user_id)
     except Exception:
         db.session.rollback()
+    # Tanda 7B — same lazy pattern for the post-event "did it happen?"
+    # question to the creator.
+    try:
+        _dispatch_my_event_confirmations(current_user_id)
+    except Exception:
+        db.session.rollback()
     q = Notification.query.filter_by(user_id=current_user_id)
     if request.args.get("only_unread") in ("1", "true", "True"):
         q = q.filter_by(is_read=False)
@@ -2168,6 +2587,11 @@ def notifications_unread_count():
     # endpoint, so any new reminder pops up on the next tick.
     try:
         _dispatch_my_reminders(current_user_id)
+    except Exception:
+        db.session.rollback()
+    # Tanda 7B — post-event confirmation question for creators.
+    try:
+        _dispatch_my_event_confirmations(current_user_id)
     except Exception:
         db.session.rollback()
     count = Notification.query.filter_by(

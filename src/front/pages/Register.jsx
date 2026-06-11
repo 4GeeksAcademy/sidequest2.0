@@ -148,6 +148,14 @@ export const Register = () => {
 			return;
 		}
 
+		// Tanda 7D — espejo de la validación nueva del backend (que antes
+		// aceptaba contraseñas de 1 carácter). Feedback inmediato sin
+		// round-trip.
+		if ((password || "").length < 6) {
+			setError("Password must be at least 6 characters.");
+			return;
+		}
+
 		setLoading(true);
 
 		try {

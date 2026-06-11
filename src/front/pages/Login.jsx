@@ -12,6 +12,7 @@ import useGlobalReducer from "../hooks/useGlobalReducer";
 import { FiAtSign, FiLock, FiLogIn } from "react-icons/fi";
 import logoSideQuest from "../assets/img/logoSideQuest.png";
 import { ResetPasswordModal } from "../components/ResetPasswordModal";
+import { setSession } from "../services/auth";
 
 // Style coherent avec Friends / Profile / EventModal (dark mode, accents indigo)
 const AUTH_CSS = `
@@ -71,26 +72,12 @@ const AUTH_CSS = `
 .sq-auth-link:hover { color: #ec4899; }
 `;
 
-// Persist the logged-in user safely. Refuses to write anything that isn't
-// a plain object (so we never end up with the literal string "undefined"
-// in localStorage, which crashes initialStore on next boot).
-const safePersistUser = (user) => {
-	if (user && typeof user === "object") {
-		localStorage.setItem("user", JSON.stringify(user));
-		return true;
-	}
-	localStorage.removeItem("user");
-	return false;
-};
-
-const safePersistToken = (token) => {
-	if (typeof token === "string" && token.length > 0) {
-		localStorage.setItem("token", token);
-		return true;
-	}
-	localStorage.removeItem("token");
-	return false;
-};
+// Tanda 7D — el JWT llega ahora en una cookie httpOnly (Set-Cookie del
+// backend, gestionada por el navegador): aquí ya NO se persiste ningún
+// token. setSession guarda solo el user (datos de UI) y el csrf_token
+// (anti-CSRF double-submit, inútil sin la cookie). El `token` que el
+// backend sigue devolviendo en el body es para Postman/clientes API y
+// se ignora a propósito.
 
 export const Login = () => {
 	const navigate = useNavigate();
@@ -126,11 +113,14 @@ export const Login = () => {
 			// Guard: refuse to persist incomplete responses. Without this an
 			// unexpected payload (e.g. backend hiccup) would write the literal
 			// string "undefined" to localStorage and break the next boot.
-			if (!safePersistToken(data.token) || !safePersistUser(data.user)) {
-				setError("Invalid response from server (missing token or user)");
+			if (!data.user || typeof data.user !== "object") {
+				setError("Invalid response from server (missing user)");
 				return;
 			}
 
+			// Tanda 7D — la cookie httpOnly ya quedó guardada por el
+			// navegador (el fetch parcheado manda credentials: "include").
+			setSession(data.user, data.csrf_token);
 			dispatch({ type: "set_user", payload: data.user });
 			navigate("/app");
 		} catch (err) {

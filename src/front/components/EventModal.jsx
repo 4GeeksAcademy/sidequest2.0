@@ -128,6 +128,20 @@ const apiMarkRoomRead   = (roomId) =>
 const apiListFriends    = () => fetch(`${API}/api/friends`, { headers: authHeaders() }).then(handle);
 
 // =============================================================
+// HELPERS
+// =============================================================
+// Tanda 7B — Un evento es "pasado" cuando su fecha+hora quedó atrás.
+// Mismo formato string que guarda el backend ("YYYY-MM-DD", "HH:MM").
+// El backend es la fuente de verdad (DELETE devuelve 409 igualmente);
+// esto solo evita ofrecer un botón que va a fallar.
+const eventIsPast = (date, time) => {
+  if (!date) return false;
+  const dt = new Date(`${date}T${(time || "00:00").slice(0, 5)}`);
+  if (Number.isNaN(dt.getTime())) return false;
+  return dt < new Date();
+};
+
+// =============================================================
 // INLINE STYLES (dark mode, consistent with Friends / Profile)
 // =============================================================
 const EVENT_CSS = `
@@ -787,18 +801,21 @@ export const EventModal = ({
     const file = e.target.files?.[0];
     if (!file) return;
     // No hard size cap — compressImage shrinks an event cover to ~300-500 KB.
-    let b64;
+    // Tanda 7V — compressAndUpload sube la portada a Cloudinary y devuelve
+    // la URL hosteada (fallback automático a base64 si la subida falla):
+    // la base guarda ~100 bytes en vez de medio mega por evento.
+    let imageValue;
     try {
-      const { compressImage } = await import("../utils/uploadImage");
-      b64 = await compressImage(file, "event");
+      const { compressAndUpload } = await import("../utils/uploadImage");
+      imageValue = await compressAndUpload(file, "event");
     } catch (compressErr) {
       console.error("Compression failed, falling back to raw base64:", compressErr);
-      b64 = await fileToBase64(file);
+      imageValue = await fileToBase64(file);
     }
     try {
-      setForm((f) => ({ ...f, image: b64 }));
+      setForm((f) => ({ ...f, image: imageValue }));
       if (isEditMode) {
-        const data = await apiUpdateEvent(eventId, { image: b64 });
+        const data = await apiUpdateEvent(eventId, { image: imageValue });
         setEventData(data.event);
         showToast("Photo updated");
         onSaved(data.event);
@@ -1135,17 +1152,19 @@ export const EventModal = ({
     e.target.value = "";
     if (!file) return;
     // No hard size cap — compressImage handles large phone photos.
-    let dataUrl;
+    // Tanda 7V — la foto se sube a Cloudinary y el mensaje guarda solo
+    // la URL (fallback automático a base64 si la subida falla).
+    let mediaUrl;
     try {
-      const { compressImage } = await import("../utils/uploadImage");
-      dataUrl = await compressImage(file, "chat");
+      const { compressAndUpload } = await import("../utils/uploadImage");
+      mediaUrl = await compressAndUpload(file, "chat");
     } catch (compressErr) {
       console.error("Compression failed, sending raw:", compressErr);
-      dataUrl = await fileToBase64(file);
+      mediaUrl = await fileToBase64(file);
     }
     try {
       await apiPostMessage(eventId, {
-        media_url: dataUrl,
+        media_url: mediaUrl,
         media_type: "image",
       });
       const m = await apiGetMessages(eventId);
@@ -1176,9 +1195,17 @@ export const EventModal = ({
         });
         audioChunksRef.current = [];
         try {
+          // Tanda 7V — el audio se sube a Cloudinary (resource_type
+          // auto) y el mensaje guarda la URL; si la subida falla, se
+          // envía el base64 como antes.
           const dataUrl = await fileToBase64(blob);
+          let mediaUrl = dataUrl;
+          try {
+            const { uploadMedia } = await import("../utils/uploadImage");
+            mediaUrl = await uploadMedia(dataUrl, "audio");
+          } catch (_) { /* fallback base64 */ }
           await apiPostMessage(eventId, {
-            media_url: dataUrl,
+            media_url: mediaUrl,
             media_type: "audio",
           });
           const m = await apiGetMessages(eventId);
@@ -1246,6 +1273,13 @@ export const EventModal = ({
   // DERIVED
   // =====================================================
   const isCreator = eventData?.is_creator ?? !isEditMode;
+  // Tanda 7B/7C — Los eventos pasados no pueden borrarse NUNCA: ocultamos
+  // el botón Delete del footer. El backend es quien manda (DELETE → 409);
+  // esto solo evita ofrecer una acción que va a fallar. Los eventos que el
+  // creador marca como "no realizados" desaparecen de las listas (los
+  // filtra el backend) pero se conservan en la base como dato.
+  const isPastEvent = isEditMode && eventIsPast(eventData?.date, eventData?.time);
+  const canDeleteEvent = isEditMode && isCreator && !isPastEvent;
   const participants = eventData?.participants || [];
   const participantIds = new Set(participants.map((p) => p.id));
 
@@ -2014,7 +2048,11 @@ export const EventModal = ({
       </Modal.Body>
 
       <Modal.Footer>
-        {isEditMode && isCreator && (
+        {/* Tanda 7B/7C — Delete solo para eventos futuros. Para un evento
+            pasado, la única acción pendiente es la confirmación ("¿pasó
+            como previsto?") que llega por la campana de notificaciones,
+            nunca el borrado. */}
+        {canDeleteEvent && (
           <Button
             variant="outline-danger"
             onClick={handleDelete}
@@ -2026,6 +2064,11 @@ export const EventModal = ({
               : <><FiTrash2 className="me-1" /> Delete event</>
             }
           </Button>
+        )}
+        {isEditMode && isCreator && !canDeleteEvent && (
+          <span className="me-auto small text-secondary fst-italic">
+            Past events can't be deleted
+          </span>
         )}
         <Button variant="outline-light" onClick={onHide}>Close</Button>
         {isEditMode && eventData?.chat_room_id && (

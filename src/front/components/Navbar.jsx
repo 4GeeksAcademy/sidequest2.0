@@ -19,6 +19,15 @@ import { NotificationBell } from "./NotificationBell.jsx";
 // Tanda 4C — Re-disparar el tour de onboarding desde el menú.
 // Onboarding.jsx escucha este evento custom y se reabre.
 import { SHOW_ONBOARDING_EVENT } from "./Onboarding.jsx";
+// Tanda 7A — "My Profile" vive ahora en este menú (antes estaba en el
+// pill nav). El modal de perfil sigue montado dentro de ButtonNavbar
+// (siempre presente via Layout); lo abrimos con el mismo patrón de
+// evento custom que el onboarding.
+import { SHOW_PROFILE_EVENT } from "./ButtonNavbar.jsx";
+// Tanda 7D — limpieza de la sesión local (user + csrf) en el logout.
+import { clearSession } from "../services/auth.js";
+// Tanda 7F — socket en tiempo real (chat + notificaciones).
+import { getSocket, disconnectSocket } from "../services/socket.js";
 import {
     FiMenu,
     FiMail,
@@ -85,9 +94,10 @@ const API = import.meta.env.VITE_BACKEND_URL;
 // Same window the backend enforces (15 min).
 const CHAT_EDIT_WINDOW_MS = 15 * 60 * 1000;
 
+// Tanda 7D — la autenticación viaja en la cookie httpOnly + X-CSRF-TOKEN,
+// añadidos por el parche global de fetch (services/auth.js).
 const authHeaders = () => ({
     "Content-Type": "application/json",
-    Authorization: `Bearer ${localStorage.getItem("token")}`,
 });
 
 const fetchWithRetry = async (url, options = {}) => {
@@ -528,11 +538,14 @@ export const Navbar = () => {
     const location = useLocation();
     const { store, dispatch } = useGlobalReducer();
 
-    const isLogged = !!localStorage.getItem("token");
     const cachedUser = (() => {
         try { return JSON.parse(localStorage.getItem("user") || "null"); }
         catch { return null; }
     })();
+    // Tanda 7D — el JWT vive en una cookie httpOnly que JS no puede leer:
+    // la señal de sesión en UI es el user persistido. Si la cookie real
+    // ya no vale, el primer 401 limpia la sesión y redirige (api.js).
+    const isLogged = !!cachedUser;
     const currentUserId = cachedUser?.id ?? store.user?.id ?? null;
 
     const [showMessages, setShowMessages] = useState(false);
@@ -596,13 +609,24 @@ export const Navbar = () => {
     }, [isLogged, location.pathname]);
 
     // =====================================================
-    // LOAD CHAT ROOMS + POLL
+    // LOAD CHAT ROOMS + SOCKET + POLL (fallback)
     // =====================================================
+    // Tanda 7F — el evento "chat:message" del socket refresca la lista
+    // (y el badge de no leídos) al instante; el intervalo pasa de 15s a
+    // 60s y queda solo como red de seguridad si el socket se cae.
     useEffect(() => {
         if (!isLogged) return;
         getChatRooms(dispatch);
-        const t = setInterval(() => getChatRooms(dispatch), 15000);
-        return () => clearInterval(t);
+        const t = setInterval(() => getChatRooms(dispatch), 60000);
+
+        const socket = getSocket();
+        const onChatPing = () => getChatRooms(dispatch);
+        if (socket) socket.on("chat:message", onChatPing);
+
+        return () => {
+            clearInterval(t);
+            if (socket) socket.off("chat:message", onChatPing);
+        };
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [isLogged]);
 
@@ -611,7 +635,8 @@ export const Navbar = () => {
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [showMessages]);
 
-    // poll messages while a chat is open
+    // Mensajes del hilo abierto — Tanda 7F: el socket avisa de mensajes
+    // nuevos de ESTA sala al instante; el poll baja de 4s a 20s (fallback).
     useEffect(() => {
         if (!activeRoom) return;
         let cancelled = false;
@@ -620,8 +645,19 @@ export const Navbar = () => {
             if (!cancelled) setMessages(data.messages || []);
         };
         load();
-        const t = setInterval(load, 4000);
-        return () => { cancelled = true; clearInterval(t); };
+        const t = setInterval(load, 20000);
+
+        const socket = getSocket();
+        const onChatPing = (p) => {
+            if (p && Number(p.room_id) === Number(activeRoom.id)) load();
+        };
+        if (socket) socket.on("chat:message", onChatPing);
+
+        return () => {
+            cancelled = true;
+            clearInterval(t);
+            if (socket) socket.off("chat:message", onChatPing);
+        };
     }, [activeRoom]);
 
     // autoscroll thread
@@ -645,9 +681,17 @@ export const Navbar = () => {
     // =====================================================
     // LOGOUT
     // =====================================================
-    const handleLogout = () => {
-        localStorage.removeItem("token");
-        localStorage.removeItem("user");
+    const handleLogout = async () => {
+        // Tanda 7D — pedimos al backend que borre la cookie httpOnly
+        // (best-effort: si el server no responde, la sesión local se
+        // limpia igual y la cookie huérfana expira sola).
+        try {
+            await fetch(`${API}/api/logout`, { method: "POST" });
+        } catch (_) { /* ignore */ }
+        // Tanda 7F — cierra el socket para que el próximo login conecte
+        // con la cookie nueva.
+        disconnectSocket();
+        clearSession();
         dispatch({ type: "logout" });
         navigate("/login", { replace: true });
     };
@@ -715,8 +759,10 @@ export const Navbar = () => {
         // Compress before sending — keeps a phone photo around ~250 KB.
         let dataUrl;
         try {
-            const { compressImage } = await import("../utils/uploadImage");
-            dataUrl = await compressImage(file, "chat");
+            // Tanda 7V — sube a Cloudinary y guarda solo la URL en el
+            // mensaje (fallback automático a base64 si la subida falla).
+            const { compressAndUpload } = await import("../utils/uploadImage");
+            dataUrl = await compressAndUpload(file, "chat");
         } catch (compressErr) {
             console.error("Compression failed, sending raw:", compressErr);
             dataUrl = await fileToDataURL(file);
@@ -755,9 +801,15 @@ export const Navbar = () => {
                 audioChunksRef.current = [];
                 if (!activeRoom) return;
                 try {
+                    // Tanda 7V — audio a Cloudinary; fallback base64.
                     const dataUrl = await fileToDataURL(blob);
+                    let mediaUrl = dataUrl;
+                    try {
+                        const { uploadMedia } = await import("../utils/uploadImage");
+                        mediaUrl = await uploadMedia(dataUrl, "audio");
+                    } catch (_) { /* fallback base64 */ }
                     await sendRoomMessage(activeRoom.id, {
-                        media_url: dataUrl,
+                        media_url: mediaUrl,
                         media_type: "audio",
                     });
                     const data = await getRoomMessages(activeRoom.id);
@@ -1010,8 +1062,18 @@ export const Navbar = () => {
                                         </Dropdown.Header>
                                         <Dropdown.Divider />
 
-                                        <Dropdown.Item as={Link} to="/friends">
-                                            <FiUsers className="me-2" /> Friends
+                                        {/* Tanda 7A — Swap con el pill nav: aquí va
+                                            "My Profile" (antes "Friends"); el acceso a
+                                            Friends baja al pill del ButtonNavbar. El
+                                            modal de perfil vive en ButtonNavbar, así
+                                            que lo abrimos disparando el evento custom
+                                            que ese componente escucha. */}
+                                        <Dropdown.Item
+                                            onClick={() => {
+                                                window.dispatchEvent(new Event(SHOW_PROFILE_EVENT));
+                                            }}
+                                        >
+                                            <FiUser className="me-2" /> My Profile
                                         </Dropdown.Item>
 
                                         {/* Tanda 4C — Replay del onboarding tour.
