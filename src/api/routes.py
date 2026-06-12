@@ -101,17 +101,25 @@ def _email_serializer():
     return URLSafeTimedSerializer(current_app.config["JWT_SECRET_KEY"])
 
 
-def _make_email_token(user_id, salt):
-    return _email_serializer().dumps({"uid": user_id}, salt=salt)
+def _make_email_token(user_id, salt, extra=None):
+    payload = {"uid": user_id}
+    if extra:
+        payload.update(extra)
+    return _email_serializer().dumps(payload, salt=salt)
+
+
+def _read_email_token_data(token, salt, max_age):
+    """Payload completo del token o None (firma inválida / caducado)."""
+    try:
+        return _email_serializer().loads(token, salt=salt, max_age=max_age)
+    except (BadSignature, SignatureExpired, Exception):
+        return None
 
 
 def _read_email_token(token, salt, max_age):
     """user_id o None (firma inválida / caducado / malformado)."""
-    try:
-        data = _email_serializer().loads(token, salt=salt, max_age=max_age)
-        return data.get("uid")
-    except (BadSignature, SignatureExpired, Exception):
-        return None
+    data = _read_email_token_data(token, salt, max_age)
+    return data.get("uid") if data else None
 
 
 # How long a sender can edit their own chat message after posting it.
@@ -800,7 +808,14 @@ def password_recovery():
     ).first()
 
     if user:
-        token = _make_email_token(user.id, PASSWORD_RESET_SALT)
+        # Tanda 7H — "un solo uso" sin tablas: el token lleva una huella
+        # del hash ACTUAL de la contraseña. Al cambiarla, la huella deja
+        # de coincidir → el mismo link ya no vale (ni reutilizado del
+        # historial, ni si la contraseña cambió por otra vía).
+        token = _make_email_token(
+            user.id, PASSWORD_RESET_SALT,
+            extra={"pw": (user.password or "")[-12:]},
+        )
         # Tanda 7H — token por QUERY STRING, no por path: los tokens de
         # itsdangerous llevan puntos y el dev-server de Vite trata todo
         # path cuyo último segmento contiene "." como un fichero (no
@@ -827,16 +842,23 @@ def password_reset_confirm():
     if not isinstance(password, str) or len(password) < 6:
         return jsonify({"msg": "Password must be at least 6 characters"}), 400
 
-    user_id = _read_email_token(
+    data = _read_email_token_data(
         token, PASSWORD_RESET_SALT, PASSWORD_RESET_MAX_AGE)
-    if not user_id:
+    if not data or not data.get("uid"):
         return jsonify({
             "msg": "This reset link is invalid or has expired. Request a new one."
         }), 400
 
-    user = db.session.get(User, user_id)
+    user = db.session.get(User, data["uid"])
     if not user:
         return jsonify({"msg": "Account no longer exists"}), 404
+
+    # Tanda 7H — un solo uso: si la contraseña ya cambió desde que se
+    # emitió el link, la huella no coincide y el token queda inservible.
+    if data.get("pw") != (user.password or "")[-12:]:
+        return jsonify({
+            "msg": "This reset link has already been used. Request a new one."
+        }), 400
 
     user.password = generate_password_hash(password)
     # De paso: si llegó al email, el email es suyo — lo marcamos verificado.
@@ -2471,6 +2493,10 @@ def mark_chat_room_read(room_id):
     membership = _get_or_create_membership(room_id, current_user_id)
     membership.last_read_at = datetime.utcnow()
     db.session.commit()
+    # Tanda 7T — read-sync: aviso a MIS otras superficies/sesiones (modal
+    # del Navbar, página Messages, EventModal, otra pestaña…) de que esta
+    # sala quedó leída → todas refrescan badges y listas al instante.
+    emit_to_user(current_user_id, "chat:read", {"room_id": room_id})
     return jsonify({
         "msg": "Room marked as read",
         "room_id": room_id,

@@ -41,7 +41,8 @@ import {
 } from "react-icons/fi";
 
 // Tanda 7H — tiempo real para el chat de la pestaña (ping chat:message).
-import { getSocket } from "../services/socket";
+// Tanda 7T — + typing indicator (sendTypingPing, con throttle interno).
+import { getSocket, sendTypingPing } from "../services/socket";
 
 // =============================================================
 // INLINE API
@@ -580,6 +581,9 @@ export const EventModal = ({
   // --- chat ---
   const [messages, setMessages] = useState([]);
   const [chatText, setChatText] = useState("");
+  // Tanda 7T — typing indicator de otros participantes del evento.
+  const [typingUser, setTypingUser] = useState(null);
+  const typingTimerRef = useRef(null);
   const chatBoxRef = useRef(null);
 
   // chat: edit-in-place
@@ -738,24 +742,45 @@ export const EventModal = ({
   // room de este evento) y el poll baja a 20s como red de seguridad.
   useEffect(() => {
     if (!isEditMode || tab !== "chat") return;
+    const rid = eventData?.chat_room_id;
     const load = async () => {
       try {
         const m = await apiGetMessages(eventId);
         setMessages(m.messages || []);
+        // Tanda 7T — la pestaña está ABIERTA: lo cargado queda leído.
+        // El backend emite chat:read y el resto de superficies (badges
+        // del Navbar/pill, columna de Messages) sincronizan al momento.
+        if (rid) apiMarkRoomRead(rid).catch(() => {});
       } catch (_) { /* transitorio: conservamos lo visible */ }
     };
     const t = setInterval(load, 20000);
 
     const socket = getSocket();
-    const rid = eventData?.chat_room_id;
     const onChatPing = (p) => {
-      if (p && rid && Number(p.room_id) === Number(rid)) load();
+      if (p && rid && Number(p.room_id) === Number(rid)) {
+        load();
+        setTypingUser(null);
+      }
     };
     if (socket) socket.on("chat:message", onChatPing);
 
+    // Tanda 7T — "is typing…" de otros participantes de este evento.
+    const onTyping = (p) => {
+      if (!p || !rid || Number(p.room_id) !== Number(rid)) return;
+      setTypingUser(p.username || "Someone");
+      if (typingTimerRef.current) clearTimeout(typingTimerRef.current);
+      typingTimerRef.current = setTimeout(() => setTypingUser(null), 3000);
+    };
+    if (socket) socket.on("chat:typing", onTyping);
+
     return () => {
       clearInterval(t);
-      if (socket) socket.off("chat:message", onChatPing);
+      if (socket) {
+        socket.off("chat:message", onChatPing);
+        socket.off("chat:typing", onTyping);
+      }
+      if (typingTimerRef.current) clearTimeout(typingTimerRef.current);
+      setTypingUser(null);
     };
   }, [tab, isEditMode, eventId, eventData?.chat_room_id]);
 
@@ -2016,6 +2041,13 @@ export const EventModal = ({
                   )}
                 </div>
 
+                {/* Tanda 7T — typing indicator de otros participantes */}
+                {typingUser && (
+                  <div className="small text-secondary fst-italic mt-2 mb-0">
+                    @{typingUser} is typing…
+                  </div>
+                )}
+
                 <InputGroup className="mt-3">
                   <Button
                     className="chat-media-btn"
@@ -2042,7 +2074,11 @@ export const EventModal = ({
                         : "Type a message..."
                     }
                     value={chatText}
-                    onChange={(e) => setChatText(e.target.value)}
+                    onChange={(e) => {
+                      setChatText(e.target.value);
+                      // Tanda 7T — "estoy escribiendo" (throttled).
+                      if (eventData?.chat_room_id) sendTypingPing(eventData.chat_room_id);
+                    }}
                     onKeyDown={(e) => { if (e.key === "Enter") handleSendMessage(); }}
                     disabled={isRecording || !!editingMsgId}
                   />

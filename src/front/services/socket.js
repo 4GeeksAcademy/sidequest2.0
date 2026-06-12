@@ -59,3 +59,26 @@ export const announceEventsChanged = () => {
     window.dispatchEvent(new Event(EVENTS_CHANGED_EVENT));
   } catch (_) { /* SSR/tests: sin window, sin problema */ }
 };
+
+// ─────────────────────────────────────────────────────────────
+// Tanda 7T — Typing indicator. Se llama desde el onChange del input
+// de cada chat; throttle de 2 s por sala para que teclear rápido no
+// dispare un evento por pulsación. El servidor valida la membresía y
+// reenvía "chat:typing" {room_id, user_id, username} al resto de
+// miembros, que lo muestran ~3 s.
+const TYPING_THROTTLE_MS = 2000;
+const lastTypingSentAt = {};
+
+export const sendTypingPing = (roomId) => {
+  if (!roomId) return;
+  const socket = getSocket();
+  if (!socket) return;
+  const now = Date.now();
+  if (lastTypingSentAt[roomId] && now - lastTypingSentAt[roomId] < TYPING_THROTTLE_MS) {
+    return;
+  }
+  lastTypingSentAt[roomId] = now;
+  try {
+    socket.emit("chat:typing", { room_id: Number(roomId) });
+  } catch (_) { /* best-effort */ }
+};
