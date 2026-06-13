@@ -270,7 +270,7 @@ const firstSentence = (bio) => {
 // color de su nivel (lo envía /friends como friend.activity_level).
 // Misma paleta que el activity bar del perfil: gris / cian / verde.
 const RING_COLORS = {
-  "Low activity": "#6c757d",
+  "Low activity": "#7d6c7a",
   "Active":       "#22d3ee",
   "Very active":  "#22c55e",
 };

@@ -75,13 +75,67 @@ def _identity_from_handshake():
         return None
 
 
+# Tanda 7T — mapa sid → user_id de las conexiones vivas. Permite que
+# los handlers de eventos del cliente (p. ej. chat:typing) sepan QUIÉN
+# emite sin re-validar el JWT en cada evento.
+_sid_uid = {}
+
+
 @socketio.on("connect")
 def handle_connect(auth=None):
     identity = _identity_from_handshake()
     if not identity:
         # False rechaza el handshake — el cliente no queda suscrito a nada.
         return False
+    _sid_uid[request.sid] = identity
     join_room("user_{}".format(identity))
+
+
+@socketio.on("disconnect")
+def handle_disconnect(*args):
+    _sid_uid.pop(request.sid, None)
+
+
+# Tanda 7T — Typing indicator. El cliente emite chat:typing {room_id}
+# (throttled a 1 cada 2 s en services/socket.js); validamos que el
+# emisor es miembro REAL de la sala y reenviamos al resto de miembros.
+# Efímero a propósito: no toca la base de datos más que para validar.
+@socketio.on("chat:typing")
+def handle_typing(data=None):
+    uid = _sid_uid.get(request.sid)
+    if not uid:
+        return
+    try:
+        uid = int(uid)
+        room_id = int((data or {}).get("room_id"))
+    except (TypeError, ValueError):
+        return
+
+    # Import local para evitar el ciclo routes → sockets → models en
+    # tiempo de carga (models no importa sockets, pero mantenemos el
+    # patrón defensivo de este módulo).
+    from api.models import db, ChatRoom, User
+
+    room = db.session.get(ChatRoom, room_id)
+    if not room:
+        return
+    if room.type == "event":
+        member_ids = [p.id for p in room.event.participants] if room.event else []
+    else:
+        member_ids = [x for x in (room.user_a_id, room.user_b_id) if x is not None]
+    if uid not in member_ids:
+        return
+
+    user = db.session.get(User, uid)
+    payload = {
+        "room_id": room_id,
+        "user_id": uid,
+        "username": user.username if user else None,
+    }
+    for member_id in member_ids:
+        if member_id == uid:
+            continue
+        emit_to_user(member_id, "chat:typing", payload)
 
 
 def emit_to_user(user_id, event, payload=None):

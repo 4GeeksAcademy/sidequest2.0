@@ -17,9 +17,13 @@ import { Container, Spinner, Alert } from "react-bootstrap";
 import maplibregl from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 
+import { FiCompass } from "react-icons/fi";
+
 import useGlobalReducer from "../hooks/useGlobalReducer";
 import { createMarkerAvatarElement } from "./MarkerAvatar";
 import { EventModal } from "./EventModal";
+// Tanda 7X — panel Discover (eventos del mundo) desplegable sobre el mapa.
+import { DiscoverPanel } from "./DiscoverPanel";
 // Tanda 7F2 — el mapa se refresca en tiempo real: ping "event:changed"
 // del socket (cambios de cualquier usuario afectado) + evento DOM local
 // (cambios hechos en este navegador desde modales fuera del mapa).
@@ -62,6 +66,53 @@ const MARKER_HOVER_CSS = `
     transform: translateX(-50%) translateY(-2px) !important;
   }
 }
+
+/* Tanda 7X — botón flotante que despliega el panel Discover. Mismo
+   lenguaje glassmorphism que la pill nav.
+   Tanda 7X7 — FIX UX (móvil): antes era position:absolute (anclado al
+   contenedor del mapa); al abrir un modal de Bootstrap ese anclaje se
+   volvía frágil y el botón saltaba arriba, sobre el navbar. Ahora es
+   position:fixed anclado al VIEWPORT (siempre justo debajo del navbar,
+   top 68px = 56 navbar + 12), z-index por DEBAJO del navbar (1030) y
+   del backdrop de modales (1040), y se oculta mientras hay un modal
+   abierto — igual que la pill de abajo. */
+.sq-discover-fab {
+  position: fixed;
+  top: 68px; left: 12px;
+  z-index: 1020;
+  display: inline-flex; align-items: center; gap: 0.4rem;
+  padding: 0.45rem 0.85rem;
+  background: rgba(15, 17, 26, 0.82);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 999px;
+  color: #e9ecef; font-weight: 600; font-size: 0.85rem;
+  cursor: pointer;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+  -webkit-backdrop-filter: blur(16px) saturate(160%);
+          backdrop-filter: blur(16px) saturate(160%);
+  transition: border-color 0.15s ease, color 0.15s ease, transform 0.12s ease;
+}
+.sq-discover-fab:hover { border-color: #6366f1; color: #fff; }
+.sq-discover-fab:active { transform: scale(0.96); }
+/* Fuera mientras hay un modal abierto (mismo criterio que .sq-bottom-nav). */
+body.modal-open .sq-discover-fab { display: none; }
+
+/* Tanda 7X7 — Controles de MapLibre (zoom +/− y brújula "volver al
+   norte"): mismo tratamiento que el FAB. Antes estaban anclados a la
+   esquina del mapa (position:absolute) y quedaban TAPADOS por el navbar
+   / saltaban en móvil. Ahora position:fixed al VIEWPORT, top 68px (=56
+   navbar + 12) para que queden justo debajo del navbar como el FAB,
+   right 12px, z-index por debajo del navbar (1030) y del backdrop de
+   modales (1040). El selector va scopeado bajo .sq-map-wrapper para
+   ganar especificidad sobre la regla por defecto de MapLibre. */
+.sq-map-wrapper .maplibregl-ctrl-top-right {
+  position: fixed;
+  top: 68px;
+  right: 12px;
+  z-index: 1020;
+}
+/* Fuera mientras hay un modal abierto (igual que el FAB y la pill). */
+body.modal-open .maplibregl-ctrl-top-right { display: none; }
 `;
 
 // Detecta si el dispositivo NO tiene capacidad de hover (móvil/tablet).
@@ -69,6 +120,31 @@ const isTouchDevice = () =>
   typeof window !== "undefined" &&
   typeof window.matchMedia === "function" &&
   window.matchMedia("(hover: none)").matches;
+
+// Tanda 7X4 — forward-geocode ligero (Nominatim, mismo proveedor que
+// EventModal/DiscoverPanel) para las cards de Discover SIN coordenadas
+// (HasData/Google Events). Con caché en memoria: clicar la misma card
+// varias veces no repega a Nominatim.
+const _geocodeCache = {};
+const geocodeAddress = async (query) => {
+  const key = query.trim().toLowerCase();
+  if (key in _geocodeCache) return _geocodeCache[key];
+  try {
+    const params = new URLSearchParams({ format: "json", q: query.trim(), limit: "1" });
+    const res = await fetch(
+      `https://nominatim.openstreetmap.org/search?${params.toString()}`,
+      { headers: { Accept: "application/json" } }
+    );
+    const arr = res.ok ? await res.json() : [];
+    const hit = Array.isArray(arr) && arr[0]
+      ? { lat: parseFloat(arr[0].lat), lng: parseFloat(arr[0].lon) }
+      : null;
+    _geocodeCache[key] = hit;
+    return hit;
+  } catch {
+    return null;
+  }
+};
 
 // Selectores que indican que hay un overlay de Bootstrap abierto.
 // Usado para suprimir el map-click cuando el usuario hace clic en el
@@ -189,6 +265,12 @@ export const Mapview = ({ onMapClick, onMarkerClick, onSaved }) => {
   const [modalOpen, setModalOpen] = useState(false);
   const [activeEventId, setActiveEventId] = useState(null);
   const [prefillCoords, setPrefillCoords] = useState(null);
+  // Tanda 7X — datos del evento externo elegido en Discover con los que
+  // pre-rellenar el EventModal (título, resumen, fecha, hora, dirección…).
+  const [prefillEvent, setPrefillEvent] = useState(null);
+  const [showDiscover, setShowDiscover] = useState(false);
+  // Marcador ámbar temporal del resultado de Discover en preview.
+  const previewMarkerRef = useRef(null);
 
   // ── UX two-tap (touch devices) ─────────────────────────────
   const [peekedMarkerId, setPeekedMarkerId] = useState(null);
@@ -645,6 +727,91 @@ export const Mapview = ({ onMapClick, onMarkerClick, onSaved }) => {
     setModalOpen(false);
     setActiveEventId(null);
     setPrefillCoords(null);
+    setPrefillEvent(null);
+  };
+
+  // ── Tanda 7X — Discover ────────────────────────────────────
+  const clearPreviewMarker = () => {
+    if (previewMarkerRef.current) {
+      previewMarkerRef.current.remove();
+      previewMarkerRef.current = null;
+    }
+  };
+
+  // flyTo + marcador ámbar temporal en unas coordenadas dadas.
+  const placePreviewAt = (lat, lng) => {
+    if (!mapRef.current) return;
+    setFollowUser(false);
+    isProgrammaticMoveRef.current = true;
+    mapRef.current.flyTo({ center: [lng, lat], zoom: 14, duration: 800 });
+    setTimeout(() => { isProgrammaticMoveRef.current = false; }, 900);
+
+    clearPreviewMarker();
+    const host = document.createElement("div");
+    host.innerHTML =
+      `<div style="width:18px;height:18px;border-radius:50%;` +
+      `background:#facc15;border:3px solid #0b0d12;` +
+      `box-shadow:0 0 14px rgba(250,204,21,0.8);"></div>`;
+    previewMarkerRef.current = new maplibregl.Marker({
+      element: host.firstElementChild,
+      anchor: "center",
+    }).setLngLat([lng, lat]).addTo(mapRef.current);
+  };
+
+  // Click en una card del panel → flyTo + marcador ámbar temporal.
+  // Tanda 7X4 — si el evento trae coordenadas (Ticketmaster/PredictHQ)
+  // las usamos directas; si NO (HasData/Google Events), geocodificamos
+  // su dirección al vuelo para que la card también ponga el marcador.
+  const handleDiscoverPreview = async (ev) => {
+    if (!mapRef.current) return;
+    if (ev?.latitude != null && ev?.longitude != null) {
+      placePreviewAt(ev.latitude, ev.longitude);
+      return;
+    }
+    const query = (ev?.location || ev?.venue_name || "").trim();
+    if (query.length < 3) return; // sin dirección usable, no hay marcador
+    const hit = await geocodeAddress(query);
+    if (hit) placePreviewAt(hit.lat, hit.lng);
+  };
+
+  const handleDiscoverClose = () => {
+    setShowDiscover(false);
+    clearPreviewMarker();
+  };
+
+  // "+ SideQuest" en una card → el evento externo se convierte en el
+  // borrador de un quest propio: mismo EventModal de siempre, todo
+  // editable, con invitación a friends incluida.
+  const handleCreateFromDiscover = (ev) => {
+    // Tanda 7X2 — el venue va a los DETALLES, no al campo dirección:
+    // "Estadio X — Calle Y, Madrid" rompía el forward-geocode del
+    // EventModal (Nominatim no entiende el "—" ni el nombre del recinto
+    // y mandaba el pin al mar). El campo location lleva SOLO la
+    // dirección geocodificable; si el proveedor no la dio, el nombre
+    // del venue como mejor aproximación.
+    const details = [
+      ev.venue_name ? `Venue: ${ev.venue_name}` : null,
+      ev.description,
+      ev.url ? `Tickets / info: ${ev.url}` : null,
+    ].filter(Boolean).join("\n\n");
+
+    setShowDiscover(false);
+    clearPreviewMarker();
+    setActiveEventId(null);
+    setPrefillCoords(
+      ev.latitude != null && ev.longitude != null
+        ? { latitude: ev.latitude, longitude: ev.longitude }
+        : null
+    );
+    setPrefillEvent({
+      title:    ev.title || "",
+      details,
+      date:     ev.date || "",
+      time:     ev.time || "",
+      location: ev.location || ev.venue_name || "",
+      image:    ev.image || "",
+    });
+    setModalOpen(true);
   };
 
   const handleSaved = (eventOrNull) => {
@@ -678,6 +845,26 @@ export const Mapview = ({ onMapClick, onMarkerClick, onSaved }) => {
           className="sq-maplibre-container"
           style={{ height: "100%", width: "100%" }}
         />
+
+        {/* Tanda 7X — Discover: botón flotante + panel sobre el mapa */}
+        {!showDiscover && (
+          <button
+            type="button"
+            className="sq-discover-fab"
+            onClick={() => setShowDiscover(true)}
+            title="Discover real-world events"
+            aria-label="Discover events"
+          >
+            <FiCompass size={16} /> Discover
+          </button>
+        )}
+        <DiscoverPanel
+          show={showDiscover}
+          onClose={handleDiscoverClose}
+          userCenter={userCenter}
+          onPreview={handleDiscoverPreview}
+          onCreateFrom={handleCreateFromDiscover}
+        />
       </div>
 
       <EventModal
@@ -685,6 +872,7 @@ export const Mapview = ({ onMapClick, onMarkerClick, onSaved }) => {
         onHide={handleClose}
         eventId={activeEventId}
         prefillCoords={prefillCoords}
+        prefillEvent={prefillEvent}
         currentUser={currentUser}
         onSaved={handleSaved}
         onDeleted={() => fetchEvents()}

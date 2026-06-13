@@ -2,7 +2,11 @@ import { useEffect, useState, useCallback, useRef } from "react";
 import { api } from "../services/api";
 // Tanda 7F — el socket avisa de mensajes nuevos al instante; el polling
 // queda solo como red de seguridad.
-import { getSocket } from "../services/socket";
+// Tanda 7T — typing indicator (sendTypingPing con throttle interno).
+import { getSocket, sendTypingPing } from "../services/socket";
+
+// Cuánto se muestra "@user is typing…" tras el último ping recibido.
+const TYPING_VISIBLE_MS = 3000;
 
 // Tanda 7F — antes 3s: el evento "chat:message" del socket refresca al
 // instante y este intervalo es solo fallback (socket caído, etc.).
@@ -22,7 +26,16 @@ export const useChat = (roomId) => {
   const [messages, setMessages] = useState([]);
   const [loading, setLoading]   = useState(false);
   const [sending, setSending]   = useState(false);
+  // Tanda 7T — username del miembro que está escribiendo (null = nadie).
+  const [typingUser, setTypingUser] = useState(null);
+  const typingTimerRef = useRef(null);
   const lastIdRef = useRef(0);
+
+  // Tanda 7T — lo llama el onChange del input del composer; el throttle
+  // vive en sendTypingPing (services/socket.js).
+  const notifyTyping = useCallback(() => {
+    if (roomId) sendTypingPing(roomId);
+  }, [roomId]);
 
   const fetchMessages = useCallback(async () => {
     if (!roomId) return;
@@ -126,13 +139,31 @@ export const useChat = (roomId) => {
       if (p && Number(p.room_id) === Number(roomId)) {
         fetchMessages();
         markRead();
+        // Un mensaje recibido apaga el "is typing…" de su autor.
+        setTypingUser(null);
       }
     };
     if (socket) socket.on("chat:message", onChatPing);
 
+    // Tanda 7T — typing indicator de los otros miembros de ESTA sala.
+    // Cada ping reinicia el temporizador de 3 s; sin pings, se apaga.
+    const onTyping = (p) => {
+      if (!p || Number(p.room_id) !== Number(roomId)) return;
+      setTypingUser(p.username || "Someone");
+      if (typingTimerRef.current) clearTimeout(typingTimerRef.current);
+      typingTimerRef.current = setTimeout(
+        () => setTypingUser(null), TYPING_VISIBLE_MS);
+    };
+    if (socket) socket.on("chat:typing", onTyping);
+
     return () => {
       clearInterval(id);
-      if (socket) socket.off("chat:message", onChatPing);
+      if (socket) {
+        socket.off("chat:message", onChatPing);
+        socket.off("chat:typing", onTyping);
+      }
+      if (typingTimerRef.current) clearTimeout(typingTimerRef.current);
+      setTypingUser(null);
     };
   }, [roomId, fetchMessages, markRead]);
 
@@ -140,5 +171,7 @@ export const useChat = (roomId) => {
     messages, loading, sending,
     sendMessage, editMessage, deleteMessage,
     refetch: fetchMessages, markRead,
+    // Tanda 7T — typing indicator
+    typingUser, notifyTyping,
   };
 };

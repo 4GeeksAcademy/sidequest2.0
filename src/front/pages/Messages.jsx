@@ -125,6 +125,8 @@ const Messages = () => {
   const {
     messages, loading, sending,
     sendMessage, editMessage, deleteMessage,
+    // Tanda 7T — typing indicator
+    typingUser, notifyTyping,
   } = useChat(selectedRoomId);
 
   // ── UI state for sending/edit ────────────────────
@@ -168,12 +170,21 @@ const Messages = () => {
 
     const socket = getSocket();
     const onChatPing = () => load();
-    if (socket) socket.on("chat:message", onChatPing);
+    if (socket) {
+      socket.on("chat:message", onChatPing);
+      // Tanda 7T — read-sync: si marco una sala como leída en OTRA
+      // superficie (modal del Navbar, EventModal, otra pestaña), esta
+      // columna refresca sus contadores al instante.
+      socket.on("chat:read", onChatPing);
+    }
 
     return () => {
       alive = false;
       clearInterval(t);
-      if (socket) socket.off("chat:message", onChatPing);
+      if (socket) {
+        socket.off("chat:message", onChatPing);
+        socket.off("chat:read", onChatPing);
+      }
     };
   }, []);
 
@@ -513,6 +524,13 @@ const Messages = () => {
                 )}
               </div>
 
+              {/* Tanda 7T — typing indicator del otro miembro */}
+              {typingUser && (
+                <div className="small text-secondary fst-italic px-3 pb-1">
+                  @{typingUser} is typing…
+                </div>
+              )}
+
               {/* Input */}
               <div className="sq-msg-composer">
                 <Form onSubmit={handleSubmitText}>
@@ -545,7 +563,11 @@ const Messages = () => {
                             : "Write a message…"
                       }
                       value={draft}
-                      onChange={(e) => setDraft(e.target.value)}
+                      onChange={(e) => {
+                        setDraft(e.target.value);
+                        // Tanda 7T — avisa "estoy escribiendo" (throttled).
+                        notifyTyping();
+                      }}
                       disabled={isRecording || !!editingId}
                     />
                     <Button
