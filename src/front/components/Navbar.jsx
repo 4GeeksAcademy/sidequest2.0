@@ -27,10 +27,12 @@ import { SHOW_PROFILE_EVENT } from "./ButtonNavbar.jsx";
 // Tanda 7D — limpieza de la sesión local (user + csrf) en el logout.
 import { clearSession } from "../services/auth.js";
 // Tanda 7F — socket en tiempo real (chat + notificaciones).
-import { getSocket, disconnectSocket } from "../services/socket.js";
+// Tanda 7T — + typing indicator (sendTypingPing, con throttle interno).
+import { getSocket, disconnectSocket, sendTypingPing } from "../services/socket.js";
 import {
     FiMenu,
     FiMail,
+    FiMessageSquare,
     FiSend,
     FiUsers,
     FiLogOut,
@@ -41,6 +43,7 @@ import {
     FiMic,
     FiSquare,
     FiUser,
+    FiBriefcase,
     FiEdit2,
     FiCheck,
     FiX,
@@ -584,6 +587,10 @@ export const Navbar = () => {
     const [replyText, setReplyText]   = useState("");
     const threadRef = useRef(null);
 
+    // Tanda 7T — typing indicator del otro miembro del hilo abierto.
+    const [typingUser, setTypingUser] = useState(null);
+    const typingTimerRef = useRef(null);
+
     // edit-in-place
     const [editingMsgId, setEditingMsgId] = useState(null);
     const [editText, setEditText] = useState("");
@@ -652,11 +659,20 @@ export const Navbar = () => {
 
         const socket = getSocket();
         const onChatPing = () => getChatRooms(dispatch);
-        if (socket) socket.on("chat:message", onChatPing);
+        if (socket) {
+            socket.on("chat:message", onChatPing);
+            // Tanda 7T — read-sync: leí una sala en cualquier otra
+            // superficie (Messages, EventModal, otra pestaña) → los
+            // badges de aquí se actualizan al instante.
+            socket.on("chat:read", onChatPing);
+        }
 
         return () => {
             clearInterval(t);
-            if (socket) socket.off("chat:message", onChatPing);
+            if (socket) {
+                socket.off("chat:message", onChatPing);
+                socket.off("chat:read", onChatPing);
+            }
         };
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [isLogged]);
@@ -681,15 +697,39 @@ export const Navbar = () => {
 
         const socket = getSocket();
         const onChatPing = (p) => {
-            if (p && Number(p.room_id) === Number(activeRoom.id)) load();
+            if (p && Number(p.room_id) === Number(activeRoom.id)) {
+                load();
+                // Tanda 7T — el hilo está ABIERTO: el mensaje entrante
+                // queda leído al instante en el servidor (emitirá
+                // chat:read y todas las superficies sincronizan) y en
+                // el badge local.
+                markRoomRead(activeRoom.id);
+                dispatch({ type: "mark_room_read_local", payload: activeRoom.id });
+                setTypingUser(null);
+            }
         };
         if (socket) socket.on("chat:message", onChatPing);
+
+        // Tanda 7T — "is typing…" de los otros miembros de esta sala.
+        const onTyping = (p) => {
+            if (!p || Number(p.room_id) !== Number(activeRoom.id)) return;
+            setTypingUser(p.username || "Someone");
+            if (typingTimerRef.current) clearTimeout(typingTimerRef.current);
+            typingTimerRef.current = setTimeout(() => setTypingUser(null), 3000);
+        };
+        if (socket) socket.on("chat:typing", onTyping);
 
         return () => {
             cancelled = true;
             clearInterval(t);
-            if (socket) socket.off("chat:message", onChatPing);
+            if (socket) {
+                socket.off("chat:message", onChatPing);
+                socket.off("chat:typing", onTyping);
+            }
+            if (typingTimerRef.current) clearTimeout(typingTimerRef.current);
+            setTypingUser(null);
         };
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [activeRoom]);
 
     // autoscroll thread
@@ -1108,6 +1148,30 @@ export const Navbar = () => {
                                             <FiUser className="me-2" /> My Profile
                                         </Dropdown.Item>
 
+                                        {/* Messages moved here from the bottom pill nav
+                                            (its slot now holds Discover). The unread
+                                            badge follows it, fed by store.chatUnreadTotal. */}
+                                        <Dropdown.Item
+                                            as={Link}
+                                            to="/messages"
+                                            className="d-flex align-items-center justify-content-between"
+                                        >
+                                            <span><FiMessageSquare className="me-2" /> Messages</span>
+                                            {chatUnread > 0 && (
+                                                <Badge bg="danger" pill style={{ fontSize: "0.62rem" }}>
+                                                    {chatUnread > 99 ? "99+" : chatUnread}
+                                                </Badge>
+                                            )}
+                                        </Dropdown.Item>
+
+                                        {/* Owner accounts manage their business profiles
+                                            here (the multi-business switcher / dashboard). */}
+                                        {cachedUser?.account_type === "business" && (
+                                            <Dropdown.Item as={Link} to="/businesses">
+                                                <FiBriefcase className="me-2" /> My businesses
+                                            </Dropdown.Item>
+                                        )}
+
                                         {/* Tanda 4C — Replay del onboarding tour.
                                             Dispara un evento custom que el componente
                                             <Onboarding/> (montado en Layout) escucha
@@ -1390,6 +1454,13 @@ export const Navbar = () => {
                                 )}
                             </div>
 
+                            {/* Tanda 7T — typing indicator del otro miembro */}
+                            {typingUser && (
+                                <div className="small text-secondary fst-italic mt-2 mb-0">
+                                    @{typingUser} is typing…
+                                </div>
+                            )}
+
                             <InputGroup className="mt-3">
                                 <Button
                                     className="sq-chat-media-btn"
@@ -1416,7 +1487,11 @@ export const Navbar = () => {
                                             : "Write a message..."
                                     }
                                     value={replyText}
-                                    onChange={(e) => setReplyText(e.target.value)}
+                                    onChange={(e) => {
+                                        setReplyText(e.target.value);
+                                        // Tanda 7T — "estoy escribiendo" (throttled).
+                                        if (activeRoom) sendTypingPing(activeRoom.id);
+                                    }}
                                     onKeyDown={(e) => {
                                         if (e.key === "Enter") handleSendReply();
                                     }}

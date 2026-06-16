@@ -6,33 +6,44 @@ import {
 	Form,
 	Button,
 	Alert,
-	Spinner,
 } from "react-bootstrap";
-import { FiMail, FiLock, FiUserPlus, FiAtSign, FiCheckCircle } from "react-icons/fi";
+import {
+	FiMail,
+	FiLock,
+	FiUserPlus,
+	FiUser,
+	FiBriefcase,
+	FiStar,
+	FiArrowLeft,
+	FiAtSign,
+	FiMapPin,
+	FiTag,
+} from "react-icons/fi";
 import logoSideQuest from "../assets/img/logoSideQuest.png";
-import { ResetPasswordModal } from "../components/ResetPasswordModal";
 
-// Style coherent avec Friends / Profile / EventModal (dark mode, accents indigo).
+// Style coherent avec Friends / Profile / EventModal (dark mode, accents indigo)
 const AUTH_CSS = `
 .sq-auth-wrap {
-	min-height: 100vh;
+	min-height: calc(100vh - 56px);
 	display: flex;
 	align-items: center;
 	justify-content: center;
 	background: radial-gradient(circle at top, #1a1d29 0%, #0b0d13 70%);
-	padding: 2rem 1rem;
+	padding: 4rem 1rem 2rem;
 }
 .sq-auth-card {
 	background: #161922;
 	color: #e9ecef;
 	border: 1px solid #262a36;
 	border-radius: 14px;
-	max-width: 420px;
+	max-width: 460px;
 	width: 100%;
 	box-shadow: 0 10px 40px rgba(0,0,0,0.4);
 }
 .sq-auth-card .form-control,
-.sq-auth-card .form-control:focus {
+.sq-auth-card .form-control:focus,
+.sq-auth-card .form-select,
+.sq-auth-card .form-select:focus {
 	background-color: #0f111a !important;
 	color: #e9ecef !important;
 	border-color: #2a2f42 !important;
@@ -69,126 +80,153 @@ const AUTH_CSS = `
 }
 .sq-auth-link:hover { color: #ec4899; }
 
-/* Tanda 4D — Checkbox de aceptación de Terms.
-   Bootstrap pone el check en azul brand por defecto; lo
-   sincronizamos con la paleta indigo de SideQuest para
-   coherencia visual. */
-.sq-auth-card .form-check-input {
-	background-color: #0f111a;
+/* ── account-type chooser (3 buttons from the wireframe) ── */
+.sq-type-grid {
+	display: grid;
+	grid-template-columns: 1fr;
+	gap: 0.75rem;
+}
+.sq-type-btn {
+	display: flex;
+	align-items: center;
+	gap: 0.9rem;
+	text-align: left;
+	background: #0f111a;
 	border: 1px solid #2a2f42;
-	width: 1.1rem;
-	height: 1.1rem;
-	margin-top: 0.2rem;
+	border-radius: 12px;
+	color: #e9ecef;
+	padding: 0.95rem 1.1rem;
+	width: 100%;
+	transition: border-color 0.15s ease, transform 0.15s ease, box-shadow 0.15s ease;
 }
-.sq-auth-card .form-check-input:checked {
-	background-color: #6366f1;
+.sq-type-btn:hover {
 	border-color: #6366f1;
+	transform: translateY(-1px);
+	box-shadow: 0 8px 24px rgba(99,102,241,0.18);
 }
-.sq-auth-card .form-check-input:focus {
-	border-color: #6366f1;
-	box-shadow: 0 0 0 0.15rem rgba(99,102,241,0.25);
+.sq-type-btn__icon {
+	flex: 0 0 auto;
+	width: 42px;
+	height: 42px;
+	border-radius: 10px;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	background: linear-gradient(135deg, #6366f1, #ec4899);
+	color: #fff;
 }
-.sq-auth-card .form-check-label {
-	cursor: pointer;
-	padding-left: 0.4rem;
-	line-height: 1.4;
+.sq-type-btn__title { font-weight: 600; line-height: 1.1; }
+.sq-type-btn__sub { font-size: 0.78rem; color: #8a90a2; }
+.sq-back-btn {
+	color: #adb5bd;
+	border: none;
+	background: transparent;
+	padding: 0;
+	font-size: 0.85rem;
 }
-
-.sq-auth-hint {
-	color: #6c757d;
-	font-size: 0.72rem;
-	margin-top: 0.25rem;
-}
+.sq-back-btn:hover { color: #6366f1; }
 `;
+
+const API = import.meta.env.VITE_BACKEND_URL;
+
+// =============================================================
+// ACCOUNT TYPE CHOOSER
+// =============================================================
+const TYPES = [
+	{
+		key: "person",
+		title: "Register as a person",
+		sub: "A regular SideQuest account",
+		icon: <FiUser />,
+	},
+	{
+		key: "business",
+		title: "Register as a company",
+		sub: "Restaurant, bar, café, brand…",
+		icon: <FiBriefcase />,
+	},
+	{
+		key: "influencer",
+		title: "Register as an influencer",
+		sub: "Share the places you go to",
+		icon: <FiStar />,
+	},
+];
 
 export const Register = () => {
 	const navigate = useNavigate();
 
-	const [showReset, setShowReset] = useState(false);
-	// Tanda 7E — tras crear la cuenta mostramos la pantalla "revisa tu
-	// correo" (con el aviso de verificación) en vez de saltar a /login.
-	const [registered, setRegistered] = useState(false);
-	const [emailSent, setEmailSent] = useState(false);
+	// null = show the chooser; otherwise one of person|business|influencer
+	const [accountType, setAccountType] = useState(null);
+	const [submitting, setSubmitting] = useState(false);
+	const [error, setError] = useState(null);
+
+	// shared fields
 	const [email, setEmail] = useState("");
 	const [username, setUsername] = useState("");
 	const [password, setPassword] = useState("");
-	// Tanda 4D — consentimiento explícito de Terms + Privacy.
-	// Obligatorio por RGPD Art. 6.1.a (consent) y por buenas prácticas
-	// de cumplimiento. El botón Register SIEMPRE es clickable; si el
-	// usuario no ha marcado el checkbox al hacer click, mostramos un
-	// alert claro (mejor UX que un botón disabled que el usuario no
-	// sabe por qué no responde).
-	const [acceptedTerms, setAcceptedTerms] = useState(false);
-	const [loading, setLoading] = useState(false);
-	const [error, setError] = useState("");
 
-	// Helper: si el usuario marca el checkbox después de ver el error
-	// de "accept terms", limpiamos el mensaje para que no se quede
-	// estancado en pantalla.
-	const handleAcceptTermsChange = (checked) => {
-		setAcceptedTerms(checked);
-		if (checked && error && error.toLowerCase().includes("terms")) {
-			setError("");
-		}
+	// influencer-only
+	const [homebase, setHomebase] = useState("");
+	const [proEmail, setProEmail] = useState("");
+
+	// business-only (first business; full setup comes after)
+	const [bizName, setBizName] = useState("");
+	const [bizCategory, setBizCategory] = useState("");
+
+	const resetChoice = () => {
+		setAccountType(null);
+		setError(null);
 	};
 
 	const handleRegister = async (e) => {
 		e.preventDefault();
-		setError("");
+		setError(null);
 
-		// Validación de aceptación de Terms — el botón ya no está
-		// disabled, así que esta es la única barrera antes del submit.
-		// Si el usuario llega aquí sin marcar, mostramos un mensaje
-		// explícito y hacemos scroll al Alert para que sea visible
-		// (importante en móvil, donde el Alert puede caer fuera del
-		// viewport si el usuario está al final del form).
-		if (!acceptedTerms) {
-			setError("Please accept the Terms of Service and Privacy Policy to register your account.");
-			// Pequeño delay para que el Alert se renderice antes del scroll
-			setTimeout(() => {
-				const alertEl = document.querySelector(".sq-auth-card .alert");
-				if (alertEl) alertEl.scrollIntoView({ behavior: "smooth", block: "center" });
-			}, 50);
-			return;
+		const payload = {
+			email,
+			username,
+			password,
+			account_type: accountType,
+		};
+		if (accountType === "influencer") {
+			payload.homebase = homebase || null;
+			payload.professional_email = proEmail || null;
+		}
+		if (accountType === "business") {
+			payload.business = {
+				name: bizName,
+				category: bizCategory || null,
+			};
 		}
 
-		// Tanda 7D — espejo de la validación nueva del backend (que antes
-		// aceptaba contraseñas de 1 carácter). Feedback inmediato sin
-		// round-trip.
-		if ((password || "").length < 6) {
-			setError("Password must be at least 6 characters.");
-			return;
-		}
-
-		setLoading(true);
-
+		setSubmitting(true);
 		try {
-			const response = await fetch(
-				`${import.meta.env.VITE_BACKEND_URL}/api/register`,
-				{
-					method: "POST",
-					headers: { "Content-Type": "application/json" },
-					body: JSON.stringify({ email, username, password }),
-				}
-			);
-
-			const data = await response.json().catch(() => ({}));
+			const response = await fetch(`${API}/api/register`, {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify(payload),
+			});
+			const data = await response.json();
 
 			if (!response.ok) {
-				setError(data.msg || "Error creating user");
+				setError(data.msg || "Error creating account");
 				return;
 			}
 
-			// Tanda 7E — el backend dice si pudo enviar el email de
-			// confirmación; mostramos la pantalla de éxito acorde.
-			setEmailSent(!!data.verification_email_sent);
-			setRegistered(true);
+			navigate("/login?registered=1");
 		} catch (err) {
 			console.error("Register error:", err);
-			setError("Server error");
+			setError("Server error — please try again");
 		} finally {
-			setLoading(false);
+			setSubmitting(false);
 		}
+	};
+
+	const titleFor = {
+		person: "Create your account",
+		business: "Register your company",
+		influencer: "Create your influencer profile",
 	};
 
 	return (
@@ -205,161 +243,159 @@ export const Register = () => {
 								style={{ filter: "brightness(0) invert(1)", height: "60px", width: "auto" }}
 							/>
 						</h2>
-						<p className="text-center text-secondary mb-4">Your SideQuest waits for you!</p>
 
-						{/* Tanda 7E — pantalla de éxito post-registro */}
-						{registered ? (
-							<div className="text-center py-3">
-								<FiCheckCircle size={44} color="#22c55e" className="mb-3" />
-								<h5 className="mb-2">Account created!</h5>
-								{emailSent ? (
-									<p className="text-secondary mb-3">
-										We've sent a confirmation link to{" "}
-										<strong className="text-light">{email}</strong>.
-										Check your inbox (and spam folder) to verify your
-										email — meanwhile you can already log in.
-									</p>
-								) : (
-									<p className="text-secondary mb-3">
-										You can now log in with your new account.
-									</p>
-								)}
-								<Button
-									className="sq-auth-submit w-100 py-2"
-									onClick={() => navigate("/login")}
-								>
-									Go to login
-								</Button>
-							</div>
-						) : (
-						<>
-						{error && (
-							<Alert variant="danger" onClose={() => setError("")} dismissible>
-								{error}
-							</Alert>
+						{/* ── STEP 1: choose the account type ── */}
+						{!accountType && (
+							<>
+								<p className="text-center text-secondary mb-4">
+									How do you want to join SideQuest?
+								</p>
+								<div className="sq-type-grid">
+									{TYPES.map((t) => (
+										<button
+											key={t.key}
+											type="button"
+											className="sq-type-btn"
+											onClick={() => {
+												setAccountType(t.key);
+												setError(null);
+											}}
+										>
+											<span className="sq-type-btn__icon">{t.icon}</span>
+											<span>
+												<span className="sq-type-btn__title d-block">{t.title}</span>
+												<span className="sq-type-btn__sub">{t.sub}</span>
+											</span>
+										</button>
+									))}
+								</div>
+							</>
 						)}
 
-						<Form onSubmit={handleRegister}>
-							<Form.Group className="mb-3">
-								<Form.Label>
-									<FiMail className="me-2" /> Email
-								</Form.Label>
-								<Form.Control
-									type="email"
-									value={email}
-									onChange={(e) => setEmail(e.target.value)}
-									placeholder="alex@example.com"
-									required
-									autoComplete="email"
-								/>
-							</Form.Group>
+						{/* ── STEP 2: the form for the chosen type ── */}
+						{accountType && (
+							<>
+								<button type="button" className="sq-back-btn mb-3 d-inline-flex align-items-center" onClick={resetChoice}>
+									<FiArrowLeft className="me-1" /> Choose a different type
+								</button>
 
-							<Form.Group className="mb-3">
-								<Form.Label>
-									<FiAtSign className="me-2" /> Username
-								</Form.Label>
-								<Form.Control
-									type="text"
-									value={username}
-									onChange={(e) => setUsername(e.target.value)}
-									placeholder="alexchen"
-									required
-									minLength={3}
-									maxLength={30}
-									pattern="[A-Za-z0-9._-]{3,30}"
-									autoComplete="username"
-								/>
-								<div className="sq-auth-hint">
-									3-30 caracteres · letras, dígitos, . _ -
-								</div>
-							</Form.Group>
+								<p className="text-center text-secondary mb-4">{titleFor[accountType]}</p>
 
-							<Form.Group className="mb-4">
-								<Form.Label>
-									<FiLock className="me-2" /> Password
-								</Form.Label>
-								<Form.Control
-									type="password"
-									value={password}
-									onChange={(e) => setPassword(e.target.value)}
-									placeholder="Enter password"
-									required
-									minLength={6}
-									autoComplete="new-password"
-								/>
-							</Form.Group>
+								{error && (
+									<Alert variant="danger" className="py-2">{error}</Alert>
+								)}
 
-							{/* Tanda 4D — Aceptación obligatoria de Terms + Privacy.
-							    `required` activa la validación HTML5 nativa del
-							    navegador, y el check JS-side en handleRegister
-							    es la red de seguridad. Los enlaces abren en una
-							    nueva pestaña para que el usuario no pierda lo
-							    que ya escribió en el form. */}
-							<Form.Group className="mb-4">
-								<Form.Check
-									type="checkbox"
-									id="register-accept-terms"
-									checked={acceptedTerms}
-									onChange={(e) => handleAcceptTermsChange(e.target.checked)}
-									label={
-										<span className="small text-secondary">
-											I have read and accept the{" "}
-											<Link to="/terms" target="_blank" rel="noreferrer" className="sq-auth-link">
-												Terms of Service
-											</Link>{" "}
-											and the{" "}
-											<Link to="/privacy" target="_blank" rel="noreferrer" className="sq-auth-link">
-												Privacy Policy
-											</Link>
-											.
-										</span>
-									}
-									aria-required="true"
-								/>
-								{/* Nota: quitamos `required` del checkbox para que el
-								    submit DEJE de bloquearse en la validación nativa
-								    del navegador. Ahora el flujo es: el botón siempre
-								    es clickable → handleRegister hace la validación →
-								    si no está marcado, muestra Alert visible. */}
-							</Form.Group>
+								<Form onSubmit={handleRegister}>
+									{/* Business: the owner's login is created with the company */}
+									{accountType === "business" && (
+										<>
+											<Form.Group className="mb-3">
+												<Form.Label><FiBriefcase className="me-2" /> Business name</Form.Label>
+												<Form.Control
+													value={bizName}
+													onChange={(e) => setBizName(e.target.value)}
+													placeholder="e.g. Café Aurora"
+													required
+												/>
+											</Form.Group>
+											<Form.Group className="mb-3">
+												<Form.Label><FiTag className="me-2" /> Category</Form.Label>
+												<Form.Select
+													value={bizCategory}
+													onChange={(e) => setBizCategory(e.target.value)}
+												>
+													<option value="">Select a category…</option>
+													<option value="restaurant">Restaurant</option>
+													<option value="bar">Bar</option>
+													<option value="cafe">Café</option>
+													<option value="brand">Clothing / brand</option>
+													<option value="shop">Shop</option>
+													<option value="other">Other</option>
+												</Form.Select>
+											</Form.Group>
+										</>
+									)}
 
-							<Button
-								type="submit"
-								className="sq-auth-submit w-100 py-2"
-								disabled={loading}
-							>
-								{loading
-									? <><Spinner size="sm" animation="border" /> Creating...</>
-									: <><FiUserPlus className="me-2" /> Register</>
-								}
-							</Button>
-						</Form>
+									{/* Shared account credentials */}
+									<Form.Group className="mb-3">
+										<Form.Label><FiMail className="me-2" /> Email</Form.Label>
+										<Form.Control
+											type="email"
+											value={email}
+											onChange={(e) => setEmail(e.target.value)}
+											placeholder="Enter email"
+											required
+										/>
+									</Form.Group>
+
+									<Form.Group className="mb-3">
+										<Form.Label><FiAtSign className="me-2" /> Username</Form.Label>
+										<Form.Control
+											value={username}
+											onChange={(e) => setUsername(e.target.value)}
+											placeholder="3-30 chars (letters, digits, . _ -)"
+											required
+										/>
+									</Form.Group>
+
+									<Form.Group className="mb-3">
+										<Form.Label><FiLock className="me-2" /> Password</Form.Label>
+										<Form.Control
+											type="password"
+											value={password}
+											onChange={(e) => setPassword(e.target.value)}
+											placeholder="At least 6 characters"
+											required
+										/>
+									</Form.Group>
+
+									{/* Influencer extras */}
+									{accountType === "influencer" && (
+										<>
+											<Form.Group className="mb-3">
+												<Form.Label><FiMapPin className="me-2" /> Homebase</Form.Label>
+												<Form.Control
+													value={homebase}
+													onChange={(e) => setHomebase(e.target.value)}
+													placeholder="e.g. Lisbon"
+												/>
+											</Form.Group>
+											<Form.Group className="mb-4">
+												<Form.Label><FiMail className="me-2" /> Professional email</Form.Label>
+												<Form.Control
+													type="email"
+													value={proEmail}
+													onChange={(e) => setProEmail(e.target.value)}
+													placeholder="contact@yourbrand.com"
+												/>
+											</Form.Group>
+										</>
+									)}
+
+									{accountType === "business" && (
+										<p className="text-secondary small mb-3">
+											You'll add your location, opening hours, photo and posts
+											right after, from your business profile.
+										</p>
+									)}
+
+									<Button type="submit" className="sq-auth-submit w-100 py-2" disabled={submitting}>
+										<FiUserPlus className="me-2" />
+										{submitting ? "Creating…" : "Register"}
+									</Button>
+								</Form>
+							</>
+						)}
 
 						<div className="text-center mt-4 text-secondary small">
-							Ya tienes cuenta?{" "}
+							Already have an account?{" "}
 							<Link to="/login" className="sq-auth-link">
-								Iniciar sesion
+								Log in
 							</Link>
 						</div>
-
-						<div className="text-center mt-2 text-secondary small">
-							<button
-								type="button"
-								className="sq-auth-link btn btn-link p-0"
-								onClick={() => setShowReset(true)}
-							>
-								Forgot your password?
-							</button>
-						</div>
-						</>
-						)}
 					</Card>
 				</Container>
 			</div>
-
-			<ResetPasswordModal show={showReset} onHide={() => setShowReset(false)} />
 		</>
 	);
 };
-
-export default Register;

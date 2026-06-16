@@ -41,7 +41,8 @@ import {
 } from "react-icons/fi";
 
 // Tanda 7H — tiempo real para el chat de la pestaña (ping chat:message).
-import { getSocket } from "../services/socket";
+// Tanda 7T — + typing indicator (sendTypingPing, con throttle interno).
+import { getSocket, sendTypingPing } from "../services/socket";
 
 // =============================================================
 // INLINE API
@@ -536,6 +537,10 @@ export const EventModal = ({
   onHide,
   eventId = null,
   prefillCoords = null,
+  // Tanda 7X — borrador procedente de Discover (evento del mundo real):
+  // { title, details, date, time, location, image }. Solo aplica en modo
+  // creación; todo queda 100% editable por el usuario.
+  prefillEvent = null,
   currentUser = null,
   onSaved = () => {},
   onDeleted = () => {},
@@ -564,6 +569,7 @@ export const EventModal = ({
     is_public: false,
     latitude: null,
     longitude: null,
+    business_id: null,
   });
 
   const [eventData, setEventData] = useState(null);
@@ -580,6 +586,9 @@ export const EventModal = ({
   // --- chat ---
   const [messages, setMessages] = useState([]);
   const [chatText, setChatText] = useState("");
+  // Tanda 7T — typing indicator de otros participantes del evento.
+  const [typingUser, setTypingUser] = useState(null);
+  const typingTimerRef = useRef(null);
   const chatBoxRef = useRef(null);
 
   // chat: edit-in-place
@@ -647,20 +656,29 @@ export const EventModal = ({
     if (isEditMode) {
       hydrate();
     } else {
+      // Tanda 7X — si venimos de Discover, el borrador llega pre-rellenado
+      // (título, resumen, fecha, hora, dirección, imagen). Sin prefill,
+      // comportamiento de siempre (formulario vacío + coords del click).
       setForm({
-        title:     "",
-        date:      "",
-        time:      "",
-        location:  "",
-        details:   "",
-        image:     "",
+        title:     prefillEvent?.title    || "",
+        date:      prefillEvent?.date     || "",
+        time:      prefillEvent?.time     || "",
+        location:  prefillEvent?.location || "",
+        details:   prefillEvent?.details  || "",
+        image:     prefillEvent?.image    || "",
         is_public: false,
         latitude:  prefillCoords?.latitude ?? null,
         longitude: prefillCoords?.longitude ?? null,
+        business_id: prefillEvent?.business_id ?? null,
       });
       setEventData(null);
 
-      if (prefillCoords?.latitude && prefillCoords?.longitude) {
+      // El reverse-geocode solo cuando NO traemos ya una dirección del
+      // proveedor — la suya suele ser más precisa que la inversa.
+      if (
+        !prefillEvent?.location &&
+        prefillCoords?.latitude && prefillCoords?.longitude
+      ) {
         reverseGeocode(prefillCoords.latitude, prefillCoords.longitude).then((addr) => {
           if (addr) setForm((f) => ({ ...f, location: addr }));
         });
@@ -670,6 +688,45 @@ export const EventModal = ({
     setAddressSuggestions([]);
     setShowAddressDropdown(false);
     setAddressSearching(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [show, eventId]);
+
+  // Tanda 7X4 — Auto-geocodificar la dirección al abrir desde Discover.
+  // Los eventos de HasData/Google Events llegan CON dirección textual
+  // pero SIN coordenadas → sin esto el pin caería en (0,0)/el mar.
+  // En vez de pedir al usuario que reescriba la dirección, al abrir
+  // lanzamos el MISMO autocompletado que usa al teclear y
+  // autoseleccionamos la primera sugerencia (el pin cae solo en el
+  // sitio). Si hay varias coincidencias dejamos el desplegable abierto
+  // para que pueda elegir otra sede. Solo aplica en modo creación y
+  // cuando hay dirección pero NO coordenadas (los demás proveedores ya
+  // las traen).
+  useEffect(() => {
+    if (!show || isEditMode) return;
+    const loc = prefillEvent?.location;
+    const hasCoords =
+      prefillCoords?.latitude != null && prefillCoords?.longitude != null;
+    if (!loc || hasCoords) return;
+
+    let cancelled = false;
+    (async () => {
+      const results = await searchAddress(loc);
+      if (cancelled || !results.length) return;
+      const first = results[0];
+      setForm((f) => ({
+        ...f,
+        location:  first.label,
+        latitude:  first.lat,
+        longitude: first.lng,
+      }));
+      // Una sola coincidencia → la damos por buena en silencio.
+      // Varias → mostramos el desplegable para que el usuario elija.
+      if (results.length > 1) {
+        setAddressSuggestions(results);
+        setShowAddressDropdown(true);
+      }
+    })();
+    return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [show, eventId]);
 
@@ -738,24 +795,45 @@ export const EventModal = ({
   // room de este evento) y el poll baja a 20s como red de seguridad.
   useEffect(() => {
     if (!isEditMode || tab !== "chat") return;
+    const rid = eventData?.chat_room_id;
     const load = async () => {
       try {
         const m = await apiGetMessages(eventId);
         setMessages(m.messages || []);
+        // Tanda 7T — la pestaña está ABIERTA: lo cargado queda leído.
+        // El backend emite chat:read y el resto de superficies (badges
+        // del Navbar/pill, columna de Messages) sincronizan al momento.
+        if (rid) apiMarkRoomRead(rid).catch(() => {});
       } catch (_) { /* transitorio: conservamos lo visible */ }
     };
     const t = setInterval(load, 20000);
 
     const socket = getSocket();
-    const rid = eventData?.chat_room_id;
     const onChatPing = (p) => {
-      if (p && rid && Number(p.room_id) === Number(rid)) load();
+      if (p && rid && Number(p.room_id) === Number(rid)) {
+        load();
+        setTypingUser(null);
+      }
     };
     if (socket) socket.on("chat:message", onChatPing);
 
+    // Tanda 7T — "is typing…" de otros participantes de este evento.
+    const onTyping = (p) => {
+      if (!p || !rid || Number(p.room_id) !== Number(rid)) return;
+      setTypingUser(p.username || "Someone");
+      if (typingTimerRef.current) clearTimeout(typingTimerRef.current);
+      typingTimerRef.current = setTimeout(() => setTypingUser(null), 3000);
+    };
+    if (socket) socket.on("chat:typing", onTyping);
+
     return () => {
       clearInterval(t);
-      if (socket) socket.off("chat:message", onChatPing);
+      if (socket) {
+        socket.off("chat:message", onChatPing);
+        socket.off("chat:typing", onTyping);
+      }
+      if (typingTimerRef.current) clearTimeout(typingTimerRef.current);
+      setTypingUser(null);
     };
   }, [tab, isEditMode, eventId, eventData?.chat_room_id]);
 
@@ -921,6 +999,7 @@ export const EventModal = ({
           is_public: form.is_public,
           latitude:  form.latitude,
           longitude: form.longitude,
+          business_id: form.business_id || null,
           invitedFriends: invitedIds,
         });
         showToast("Event created");
@@ -2016,6 +2095,13 @@ export const EventModal = ({
                   )}
                 </div>
 
+                {/* Tanda 7T — typing indicator de otros participantes */}
+                {typingUser && (
+                  <div className="small text-secondary fst-italic mt-2 mb-0">
+                    @{typingUser} is typing…
+                  </div>
+                )}
+
                 <InputGroup className="mt-3">
                   <Button
                     className="chat-media-btn"
@@ -2042,7 +2128,11 @@ export const EventModal = ({
                         : "Type a message..."
                     }
                     value={chatText}
-                    onChange={(e) => setChatText(e.target.value)}
+                    onChange={(e) => {
+                      setChatText(e.target.value);
+                      // Tanda 7T — "estoy escribiendo" (throttled).
+                      if (eventData?.chat_room_id) sendTypingPing(eventData.chat_room_id);
+                    }}
                     onKeyDown={(e) => { if (e.key === "Enter") handleSendMessage(); }}
                     disabled={isRecording || !!editingMsgId}
                   />

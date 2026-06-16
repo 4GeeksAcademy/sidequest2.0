@@ -15,6 +15,7 @@ import {
   FiHome,
   FiPlus,
   FiMessageSquare,
+  FiCompass,
   FiUser,
   FiCalendar,
   FiUsers,
@@ -541,20 +542,12 @@ export const BottomNavbar = () => {
         </Link>
 
         <Link
-          to="/messages"
-          className={`sq-bottom-nav-item ${isActive("/messages") ? "active" : ""}`}
-          title="Chatroom"
-          aria-label={`Chatroom${chatUnread > 0 ? ` (${chatUnread} unread)` : ""}`}
+          to="/discover"
+          className={`sq-bottom-nav-item ${isActive("/discover") ? "active" : ""}`}
+          title="Discover"
+          aria-label="Discover events and creators"
         >
-          <FiMessageSquare size={22} />
-          {/* Contador rojo de mensajes no leídos — espejo del badge del
-              botón de mail del Navbar, alimentado por el mismo
-              store.chatUnreadTotal. */}
-          {chatUnread > 0 && (
-            <span className="sq-bottom-nav-badge" aria-hidden="true">
-              {chatUnread > 99 ? "99+" : chatUnread}
-            </span>
-          )}
+          <FiCompass size={22} />
         </Link>
 
         <button
