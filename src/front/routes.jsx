@@ -14,6 +14,10 @@ import { Login } from "./pages/Login";
 import { Friends } from "./pages/Friends";
 import { FriendProfile } from "./pages/FriendProfile";
 import { EventsList } from "./pages/EventsList";
+import { BusinessProfile } from "./pages/BusinessProfile";
+import { OwnerDashboard } from "./pages/OwnerDashboard";
+import { InfluencerProfile } from "./pages/InfluencerProfile";
+import { Discover } from "./pages/Discover";
 import Map from "./pages/Map";
 import Messages from "./pages/Messages";
 // Tanda 4D — Legal pages (RGPD / LCEN / LSSI compliance).
@@ -51,6 +55,10 @@ export const router = createBrowserRouter(
       <Route path="/friends" element={<Friends />} />
       <Route path="/friends/:userId" element={<FriendProfile />} />
       <Route path="/events" element={<EventsList />} />
+      <Route path="/business/:id" element={<BusinessProfile />} />
+      <Route path="/businesses" element={<OwnerDashboard />} />
+      <Route path="/influencer/:id" element={<InfluencerProfile />} />
+      <Route path="/discover" element={<Discover />} />
       <Route path="/map" element={<Map />} />
 
       {/* Messages — page dedicated */}

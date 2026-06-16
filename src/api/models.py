@@ -1,7 +1,7 @@
 from datetime import datetime
 from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy import (
-    String, Boolean, Float, ForeignKey, Table, Column, Text,
+    String, Boolean, Float, Integer, ForeignKey, Table, Column, Text,
     DateTime, UniqueConstraint, CheckConstraint, JSON, Index,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -44,6 +44,28 @@ class User(db.Model):
     email_verified:      Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default="true")
 
+    # ── account type ────────────────────────────────
+    # Set at registration via the 3-button chooser (person / company /
+    # influencer). Drives which profile UI the app renders.
+    #   'person'      → regular user (the original flow; default)
+    #   'business'    → owner account; owns one or more Business rows
+    #   'influencer'  → user with public influencer profile (flag-only,
+    #                   reuses username / first_name / profile_picture_url)
+    account_type:       Mapped[str] = mapped_column(
+        String(20), nullable=False, default="person", server_default="person")
+    # Influencer-only fields (NULL for person / business accounts).
+    homebase:           Mapped[str] = mapped_column(String(120), nullable=True)
+    professional_email: Mapped[str] = mapped_column(String(120), nullable=True)
+
+    # An owner (account_type == 'business') can manage several businesses;
+    # this powers the dropdown profile-switcher in the wireframe.
+    businesses: Mapped[list["Business"]] = relationship(
+        "Business",
+        back_populates="owner",
+        cascade="all, delete-orphan",
+        lazy="selectin",
+    )
+
     def serialize(self):
         return {
             "id":                  self.id,
@@ -57,6 +79,9 @@ class User(db.Model):
             "birthdate":           self.birthdate,
             "phone":               self.phone,
             "email_verified":      bool(self.email_verified),
+            "account_type":        self.account_type or "person",
+            "homebase":            self.homebase,
+            "professional_email":  self.professional_email,
             "created_at":          self.created_at.isoformat() + "Z" if self.created_at else None,
         }
 
@@ -88,6 +113,10 @@ class Event(db.Model):
     # only visible to people who were explicitly invited.
     is_public:  Mapped[bool]  = mapped_column(Boolean, nullable=False, default=False, server_default="false")
     creator_id: Mapped[int]   = mapped_column(ForeignKey("user.id"), nullable=False)
+    # Optional: the business this event belongs to. NULL for events created
+    # by a regular person. When set, the event shows up in that business's
+    # "events" carousel. creator_id still records WHO (the owner) created it.
+    business_id: Mapped[int]  = mapped_column(ForeignKey("business.id"), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=True, default=datetime.utcnow)
     # Tanda 7B — Validación post-evento del creador:
     #   None  → el evento aún no pasó, o pasó y el creador no respondió
@@ -97,6 +126,7 @@ class Event(db.Model):
     happened:   Mapped[bool]  = mapped_column(Boolean, nullable=True, default=None)
 
     creator:      Mapped["User"]       = relationship("User", foreign_keys=[creator_id])
+    business:     Mapped["Business"]   = relationship("Business", foreign_keys=[business_id])
     participants: Mapped[list["User"]] = relationship(
         "User", secondary=event_participants, lazy="selectin"
     )
@@ -164,6 +194,8 @@ class Event(db.Model):
             "creator_id":         self.creator_id,
             "creator_username":   self.creator.username if self.creator else None,
             "creator_picture":    creator_picture,
+            "business_id":        self.business_id,
+            "business_name":      self.business.name if self.business else None,
             "participants":       participants_data,
             "participants_count": len(self.participants),
             "going_count":        going_count,
@@ -599,3 +631,210 @@ class Notification(db.Model):
             "is_read":    self.is_read,
             "created_at": self.created_at.isoformat() + "Z" if self.created_at else None,
         }
+
+# ── BUSINESS ──────────────────────────────────────────────
+# A business is NOT a login. It is owned by a User whose
+# account_type == 'business'. One owner can have many businesses
+# (the dropdown profile-switcher in the wireframe).
+#
+# The public business profile renders, in order:
+#   0. profile_picture_url   1. name        2. location
+#   3. hours (JSON)          4. rating()    5. events carousel
+#   6. posts feed
+# `rating` is ALWAYS computed from reviews, never stored.
+class Business(db.Model):
+    __tablename__ = "business"
+
+    id:                  Mapped[int] = mapped_column(primary_key=True)
+    owner_id:            Mapped[int] = mapped_column(ForeignKey("user.id"), nullable=False, index=True)
+    name:                Mapped[str] = mapped_column(String(120), nullable=False)
+    category:            Mapped[str] = mapped_column(String(60),  nullable=True)   # restaurant | bar | cafe | brand | ...
+    location:            Mapped[str] = mapped_column(String(255), nullable=True)
+    latitude:            Mapped[float] = mapped_column(Float, nullable=True)
+    longitude:           Mapped[float] = mapped_column(Float, nullable=True)
+    profile_picture_url: Mapped[str] = mapped_column(Text, nullable=True)
+    description:         Mapped[str] = mapped_column(Text, nullable=True)
+    # Opening hours as JSON, e.g.
+    #   {"mon": {"open": "09:00", "close": "18:00"}, "tue": {...}, ...}
+    # A missing day == closed. Kept as JSON to stay flexible without
+    # extra tables.
+    hours:               Mapped[dict] = mapped_column(JSON, nullable=True, default=dict)
+    created_at:          Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+
+    owner: Mapped["User"] = relationship("User", back_populates="businesses", foreign_keys=[owner_id])
+    posts: Mapped[list["BusinessPost"]] = relationship(
+        "BusinessPost",
+        back_populates="business",
+        cascade="all, delete-orphan",
+        order_by="BusinessPost.created_at.desc()",
+        lazy="selectin",
+    )
+    reviews: Mapped[list["Review"]] = relationship(
+        "Review",
+        back_populates="business",
+        cascade="all, delete-orphan",
+        lazy="selectin",
+    )
+    # Events created under this business (the carousel). FK lives on Event;
+    # this side is read-only (events are assigned a business at creation
+    # via Event.business_id, never through this collection).
+    events: Mapped[list["Event"]] = relationship(
+        "Event",
+        foreign_keys="Event.business_id",
+        viewonly=True,
+        lazy="selectin",
+    )
+
+    def rating(self):
+        """Average review score (1-5) rounded to 1 decimal, or None."""
+        vals = [r.rating for r in (self.reviews or []) if r.rating is not None]
+        if not vals:
+            return None
+        return round(sum(vals) / len(vals), 1)
+
+    def serialize(self, include_feed=False, current_user_id=None):
+        data = {
+            "id":                  self.id,
+            "owner_id":            self.owner_id,
+            "owner_username":      self.owner.username if self.owner else None,
+            "name":                self.name,
+            "category":            self.category,
+            "location":            self.location,
+            "latitude":            self.latitude,
+            "longitude":           self.longitude,
+            "profile_picture_url": self.profile_picture_url,
+            "description":         self.description,
+            "hours":               self.hours or {},
+            "rating":              self.rating(),
+            "reviews_count":       len(self.reviews or []),
+            "events_count":        len(self.events or []),
+            "posts_count":         len(self.posts or []),
+            "created_at":          self.created_at.isoformat() + "Z" if self.created_at else None,
+        }
+        if include_feed:
+            data["posts"]   = [p.serialize() for p in (self.posts or [])]
+            data["events"]  = [e.serialize(current_user_id=current_user_id) for e in (self.events or [])]
+            data["reviews"] = [r.serialize() for r in (self.reviews or [])]
+        return data
+
+
+# ── BUSINESS POST ─────────────────────────────────────────
+# An entry in the business's feed (item 6 of the business profile).
+class BusinessPost(db.Model):
+    __tablename__ = "business_post"
+
+    id:          Mapped[int] = mapped_column(primary_key=True)
+    business_id: Mapped[int] = mapped_column(ForeignKey("business.id"), nullable=False, index=True)
+    image:       Mapped[str] = mapped_column(Text, nullable=True)
+    text:        Mapped[str] = mapped_column(Text, nullable=True)
+    created_at:  Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+
+    business: Mapped["Business"] = relationship("Business", back_populates="posts")
+
+    def serialize(self):
+        return {
+            "id":          self.id,
+            "business_id": self.business_id,
+            "image":       self.image,
+            "text":        self.text,
+            "created_at":  self.created_at.isoformat() + "Z" if self.created_at else None,
+        }
+
+
+# ── REVIEW ────────────────────────────────────────────────
+# A 1-5 star review left by a User on a Business (item 4 — drives the
+# computed rating). One review per (business, author); re-posting updates
+# the existing row at the route level.
+class Review(db.Model):
+    __tablename__ = "review"
+
+    id:          Mapped[int] = mapped_column(primary_key=True)
+    business_id: Mapped[int] = mapped_column(ForeignKey("business.id"), nullable=False, index=True)
+    author_id:   Mapped[int] = mapped_column(ForeignKey("user.id"), nullable=False, index=True)
+    rating:      Mapped[int] = mapped_column(Integer, nullable=False)
+    text:        Mapped[str] = mapped_column(Text, nullable=True)
+    created_at:  Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+
+    business: Mapped["Business"] = relationship("Business", back_populates="reviews")
+    author:   Mapped["User"]     = relationship("User", foreign_keys=[author_id])
+
+    __table_args__ = (
+        UniqueConstraint("business_id", "author_id", name="uq_review_author"),
+        CheckConstraint("rating >= 1 AND rating <= 5", name="ck_review_rating_range"),
+    )
+
+    def serialize(self):
+        return {
+            "id":              self.id,
+            "business_id":     self.business_id,
+            "author_id":       self.author_id,
+            "author_username": self.author.username if self.author else None,
+            "author_picture":  self.author.profile_picture_url if self.author else None,
+            "rating":          self.rating,
+            "text":            self.text,
+            "created_at":      self.created_at.isoformat() + "Z" if self.created_at else None,
+        }
+
+
+# ── EVENT OPINION ─────────────────────────────────────────
+# A short opinion a user (typically an influencer) leaves about an event
+# they attended. Surfaced on the influencer profile: each "place went"
+# event card swaps the usual "Details" button for "@username's opinion".
+# One opinion per (author, event).
+class EventOpinion(db.Model):
+    __tablename__ = "event_opinion"
+
+    id:         Mapped[int] = mapped_column(primary_key=True)
+    author_id:  Mapped[int] = mapped_column(ForeignKey("user.id"), nullable=False, index=True)
+    event_id:   Mapped[int] = mapped_column(ForeignKey("event.id"), nullable=False, index=True)
+    text:       Mapped[str] = mapped_column(Text, nullable=True)
+    rating:     Mapped[int] = mapped_column(Integer, nullable=True)   # optional 1-5
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+
+    author: Mapped["User"]  = relationship("User", foreign_keys=[author_id])
+    event:  Mapped["Event"] = relationship("Event", foreign_keys=[event_id])
+
+    __table_args__ = (
+        UniqueConstraint("author_id", "event_id", name="uq_opinion_author_event"),
+        CheckConstraint("rating IS NULL OR (rating >= 1 AND rating <= 5)",
+                        name="ck_opinion_rating_range"),
+    )
+
+    def serialize(self):
+        return {
+            "id":              self.id,
+            "author_id":       self.author_id,
+            "author_username": self.author.username if self.author else None,
+            "event_id":        self.event_id,
+            "text":            self.text,
+            "rating":          self.rating,
+            "created_at":      self.created_at.isoformat() + "Z" if self.created_at else None,
+        }
+
+
+# ── FOLLOW ────────────────────────────────────────────────
+# A one-directional follow. Targets are EITHER a Business (place) OR a
+# User that is an influencer/owner — never both (XOR enforced). Unlike
+# Friendship, follows are not mutual and need no acceptance: businesses
+# and influencers "have only followers, not friends".
+class Follow(db.Model):
+    __tablename__ = "follow"
+
+    id:             Mapped[int] = mapped_column(primary_key=True)
+    follower_id:    Mapped[int] = mapped_column(ForeignKey("user.id"), nullable=False, index=True)
+    business_id:    Mapped[int] = mapped_column(ForeignKey("business.id"), nullable=True, index=True)
+    target_user_id: Mapped[int] = mapped_column(ForeignKey("user.id"), nullable=True, index=True)
+    created_at:     Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+
+    follower:    Mapped["User"]     = relationship("User", foreign_keys=[follower_id])
+    target_user: Mapped["User"]     = relationship("User", foreign_keys=[target_user_id])
+    business:    Mapped["Business"] = relationship("Business", foreign_keys=[business_id])
+
+    __table_args__ = (
+        UniqueConstraint("follower_id", "business_id", name="uq_follow_business"),
+        UniqueConstraint("follower_id", "target_user_id", name="uq_follow_user"),
+        # Exactly one of business_id / target_user_id must be set (XOR).
+        CheckConstraint(
+            "(business_id IS NOT NULL) <> (target_user_id IS NOT NULL)",
+            name="ck_follow_one_target"),
+    )

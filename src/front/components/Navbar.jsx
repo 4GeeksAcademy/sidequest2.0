@@ -32,6 +32,7 @@ import { getSocket, disconnectSocket, sendTypingPing } from "../services/socket.
 import {
     FiMenu,
     FiMail,
+    FiMessageSquare,
     FiSend,
     FiUsers,
     FiLogOut,
@@ -42,6 +43,7 @@ import {
     FiMic,
     FiSquare,
     FiUser,
+    FiBriefcase,
     FiEdit2,
     FiCheck,
     FiX,
@@ -1145,6 +1147,30 @@ export const Navbar = () => {
                                         >
                                             <FiUser className="me-2" /> My Profile
                                         </Dropdown.Item>
+
+                                        {/* Messages moved here from the bottom pill nav
+                                            (its slot now holds Discover). The unread
+                                            badge follows it, fed by store.chatUnreadTotal. */}
+                                        <Dropdown.Item
+                                            as={Link}
+                                            to="/messages"
+                                            className="d-flex align-items-center justify-content-between"
+                                        >
+                                            <span><FiMessageSquare className="me-2" /> Messages</span>
+                                            {chatUnread > 0 && (
+                                                <Badge bg="danger" pill style={{ fontSize: "0.62rem" }}>
+                                                    {chatUnread > 99 ? "99+" : chatUnread}
+                                                </Badge>
+                                            )}
+                                        </Dropdown.Item>
+
+                                        {/* Owner accounts manage their business profiles
+                                            here (the multi-business switcher / dashboard). */}
+                                        {cachedUser?.account_type === "business" && (
+                                            <Dropdown.Item as={Link} to="/businesses">
+                                                <FiBriefcase className="me-2" /> My businesses
+                                            </Dropdown.Item>
+                                        )}
 
                                         {/* Tanda 4C — Replay del onboarding tour.
                                             Dispara un evento custom que el componente

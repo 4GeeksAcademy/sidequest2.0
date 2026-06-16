@@ -569,6 +569,7 @@ export const EventModal = ({
     is_public: false,
     latitude: null,
     longitude: null,
+    business_id: null,
   });
 
   const [eventData, setEventData] = useState(null);
@@ -668,6 +669,7 @@ export const EventModal = ({
         is_public: false,
         latitude:  prefillCoords?.latitude ?? null,
         longitude: prefillCoords?.longitude ?? null,
+        business_id: prefillEvent?.business_id ?? null,
       });
       setEventData(null);
 
@@ -997,6 +999,7 @@ export const EventModal = ({
           is_public: form.is_public,
           latitude:  form.latitude,
           longitude: form.longitude,
+          business_id: form.business_id || null,
           invitedFriends: invitedIds,
         });
         showToast("Event created");

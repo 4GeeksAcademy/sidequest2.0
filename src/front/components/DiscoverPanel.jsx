@@ -69,6 +69,29 @@ const PANEL_CSS = `
 }
 body.sq-discover-open .sq-bottom-nav { display: none; }
 
+/* ── Page variant — embedded in the full /discover page (not over the map) ── */
+.sq-discover-panel.as-page {
+  position: static;
+  inset: auto;
+  width: 100%;
+  max-width: 760px;
+  margin: 0 auto;
+  height: auto;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+  -webkit-backdrop-filter: none;
+          backdrop-filter: none;
+}
+@media (max-width: 575.98px) {
+  .sq-discover-panel.as-page {
+    position: static;
+    top: auto;
+    border-radius: 0;
+  }
+}
+
 /* ── Header ── */
 .sq-discover-header {
   display: flex; align-items: center; justify-content: space-between;
@@ -249,6 +272,7 @@ export const DiscoverPanel = ({
   userCenter,          // [lat, lng] | null — GPS que ya gestiona Mapview
   onPreview,           // (ev) => void — el mapa hace flyTo + marcador
   onCreateFrom,        // (ev) => void — abre EventModal pre-rellenado
+  variant = "overlay", // "overlay" (sobre el mapa) | "page" (full /discover)
 }) => {
   const [mode, setMode] = useState(userCenter ? "near" : "city");
   const [city, setCity] = useState("");
@@ -278,10 +302,10 @@ export const DiscoverPanel = ({
   // Tanda 7X2 — mientras el panel está abierto, ocultamos la pill nav
   // (mismo patrón que body.modal-open de los modales Bootstrap).
   useEffect(() => {
-    if (!show) return;
+    if (!show || variant !== "overlay") return;
     document.body.classList.add("sq-discover-open");
     return () => document.body.classList.remove("sq-discover-open");
-  }, [show]);
+  }, [show, variant]);
 
   const resolveGeo = async () => {
     if (mode === "city") {
@@ -388,17 +412,19 @@ export const DiscoverPanel = ({
   });
 
   return (
-    <div className="sq-discover-panel" role="dialog" aria-label="Discover events">
+    <div className={`sq-discover-panel ${variant === "page" ? "as-page" : ""}`} role="dialog" aria-label="Discover events">
       <style>{PANEL_CSS}</style>
 
-      <div className="sq-discover-header">
-        <div className="sq-discover-title">
-          <FiCompass /> Discover events
+      {variant === "overlay" && (
+        <div className="sq-discover-header">
+          <div className="sq-discover-title">
+            <FiCompass /> Discover events
+          </div>
+          <Button className="sq-discover-close" onClick={onClose} aria-label="Close">
+            <FiX size={20} />
+          </Button>
         </div>
-        <Button className="sq-discover-close" onClick={onClose} aria-label="Close">
-          <FiX size={20} />
-        </Button>
-      </div>
+      )}
 
       <div className="sq-discover-filters">
         <div className="sq-discover-mode">

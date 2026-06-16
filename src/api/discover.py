@@ -691,11 +691,79 @@ PROVIDERS = [
 
 
 # ── Endpoint ─────────────────────────────────────────────────
+def _internal_discover_events(filters):
+    """Public events created by business/influencer accounts, shaped like
+    provider results so they render in the same Discover list. Filtered by
+    keyword, date range and (near-me) distance. Best-effort: never raises."""
+    try:
+        from api.models import db, Event, User
+        from math import radians, sin, cos, asin, sqrt
+    except Exception:
+        return []
+
+    def _haversine(lat1, lng1, lat2, lng2):
+        r = 6371.0
+        dlat = radians(lat2 - lat1)
+        dlng = radians(lng2 - lng1)
+        a = sin(dlat / 2) ** 2 + cos(radians(lat1)) * cos(radians(lat2)) * sin(dlng / 2) ** 2
+        return 2 * r * asin(sqrt(a))
+
+    try:
+        rows = (Event.query.join(User, Event.creator_id == User.id)
+                .filter(Event.is_public.is_(True))
+                .filter(User.account_type.in_(("business", "influencer")))
+                .all())
+    except Exception:
+        return []
+
+    q = (filters.get("q") or "").strip().lower()
+    start = filters.get("start")
+    end = filters.get("end")
+    lat = filters.get("lat")
+    lng = filters.get("lng")
+    radius = filters.get("radius") or 40
+    place = (filters.get("place") or filters.get("city") or "").strip().lower()
+
+    out = []
+    for ev in rows:
+        if q and q not in ((ev.title or "") + " " + (ev.location or "")).lower():
+            continue
+        if start and ev.date and ev.date < start:
+            continue
+        if end and ev.date and ev.date > end:
+            continue
+        # Geo filter: near-me uses distance; city/trip uses a location match.
+        if lat is not None and lng is not None:
+            if ev.latitude is None or ev.longitude is None:
+                continue
+            if _haversine(lat, lng, ev.latitude, ev.longitude) > radius:
+                continue
+        elif place:
+            if place not in (ev.location or "").lower():
+                continue
+        out.append({
+            "id":         "sq-{}".format(ev.id),
+            "title":      ev.title or "(untitled)",
+            "date":       ev.date,
+            "time":       ev.time,
+            "location":   ev.location,
+            "venue_name": None,
+            "latitude":   ev.latitude,
+            "longitude":  ev.longitude,
+            "image":      ev.image,
+            "url":        None,
+            "source":     "SideQuest",
+            "category":   None,
+            "price_min":  None,
+            "incomplete": not ev.date,
+        })
+    return out
+
+
 @discover_bp.route("/events", methods=["GET"])
 @jwt_required()
 def discover_events():
     """Query params:
-      q         keyword libre
       city      modo viaje ("Madrid", "Paris"...)
       lat, lng  modo "near me" (se ignoran si hay city)
       radius    km alrededor de lat/lng (default 40)
@@ -704,10 +772,6 @@ def discover_events():
       page      página del proveedor (default 0)
     """
     configured = [p for p in PROVIDERS if p[2]()]
-    if not configured:
-        return jsonify({
-            "msg": "Event discovery is not configured (missing TICKETMASTER_API_KEY)"
-        }), 503
 
     def _f(name, cast=str):
         v = (request.args.get(name) or "").strip()
@@ -740,10 +804,19 @@ def discover_events():
     if not filters["city"] and (filters["lat"] is None or filters["lng"] is None):
         return jsonify({"msg": "city or lat+lng is required"}), 400
 
+    # Internal events created by businesses/influencers — always fresh,
+    # shown alongside the external providers' results.
+    internal = _internal_discover_events(filters)
+
     cache_key = tuple(sorted((k, str(v)) for k, v in filters.items()))
     cached = _cache_get(cache_key)
     if cached:
-        return jsonify(cached), 200
+        merged = dict(cached)
+        ext = cached.get("events", [])
+        seen_ids = {e.get("id") for e in internal}
+        merged["events"] = internal + [e for e in ext if e.get("id") not in seen_ids]
+        merged["total"] = (cached.get("total", len(ext))) + len(internal)
+        return jsonify(merged), 200
 
     events, total, statuses = [], 0, {}
     for name, fetch, _ in configured:
@@ -759,7 +832,12 @@ def discover_events():
             print("[discover] provider '{}' failed: {}".format(name, exc))
             statuses[name] = "error"
 
-    if not events and all(s == "error" for s in statuses.values()):
+    # Merge internal SideQuest events (created by businesses/influencers)
+    # in front of the providers' results.
+    events = internal + events
+    total += len(internal)
+
+    if not events and statuses and all(s == "error" for s in statuses.values()):
         return jsonify({"msg": "Event providers are unreachable right now"}), 502
 
     # Dedupe entre proveedores (p. ej. Nager y Calendarific repiten los

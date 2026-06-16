@@ -1,8 +1,8 @@
-"""initial schema
+"""empty message
 
-Revision ID: 41b99d75b108
+Revision ID: d9ccb3653d9f
 Revises: 
-Create Date: 2026-06-13 23:40:40.940403
+Create Date: 2026-06-16 13:19:43.509910
 
 """
 from alembic import op
@@ -10,7 +10,7 @@ import sqlalchemy as sa
 
 
 # revision identifiers, used by Alembic.
-revision = '41b99d75b108'
+revision = 'd9ccb3653d9f'
 down_revision = None
 branch_labels = None
 depends_on = None
@@ -33,27 +33,31 @@ def upgrade():
     sa.Column('phone', sa.String(length=30), nullable=True),
     sa.Column('created_at', sa.DateTime(), nullable=True),
     sa.Column('email_verified', sa.Boolean(), server_default='true', nullable=False),
+    sa.Column('account_type', sa.String(length=20), server_default='person', nullable=False),
+    sa.Column('homebase', sa.String(length=120), nullable=True),
+    sa.Column('professional_email', sa.String(length=120), nullable=True),
     sa.PrimaryKeyConstraint('id'),
     sa.UniqueConstraint('email'),
     sa.UniqueConstraint('username')
     )
-    op.create_table('event',
+    op.create_table('business',
     sa.Column('id', sa.Integer(), nullable=False),
-    sa.Column('title', sa.String(length=120), nullable=True),
-    sa.Column('date', sa.String(length=50), nullable=False),
-    sa.Column('time', sa.String(length=50), nullable=False),
-    sa.Column('location', sa.String(length=255), nullable=False),
+    sa.Column('owner_id', sa.Integer(), nullable=False),
+    sa.Column('name', sa.String(length=120), nullable=False),
+    sa.Column('category', sa.String(length=60), nullable=True),
+    sa.Column('location', sa.String(length=255), nullable=True),
     sa.Column('latitude', sa.Float(), nullable=True),
     sa.Column('longitude', sa.Float(), nullable=True),
-    sa.Column('details', sa.Text(), nullable=True),
-    sa.Column('image', sa.Text(), nullable=True),
-    sa.Column('is_public', sa.Boolean(), server_default='false', nullable=False),
-    sa.Column('creator_id', sa.Integer(), nullable=False),
-    sa.Column('created_at', sa.DateTime(), nullable=True),
-    sa.Column('happened', sa.Boolean(), nullable=True),
-    sa.ForeignKeyConstraint(['creator_id'], ['user.id'], ),
+    sa.Column('profile_picture_url', sa.Text(), nullable=True),
+    sa.Column('description', sa.Text(), nullable=True),
+    sa.Column('hours', sa.JSON(), nullable=True),
+    sa.Column('created_at', sa.DateTime(), nullable=False),
+    sa.ForeignKeyConstraint(['owner_id'], ['user.id'], ),
     sa.PrimaryKeyConstraint('id')
     )
+    with op.batch_alter_table('business', schema=None) as batch_op:
+        batch_op.create_index(batch_op.f('ix_business_owner_id'), ['owner_id'], unique=False)
+
     op.create_table('friendship',
     sa.Column('id', sa.Integer(), nullable=False),
     sa.Column('requester_id', sa.Integer(), nullable=False),
@@ -87,6 +91,73 @@ def upgrade():
         batch_op.create_index(batch_op.f('ix_notification_is_read'), ['is_read'], unique=False)
         batch_op.create_index(batch_op.f('ix_notification_user_id'), ['user_id'], unique=False)
         batch_op.create_index('ix_notification_user_read', ['user_id', 'is_read'], unique=False)
+
+    op.create_table('business_post',
+    sa.Column('id', sa.Integer(), nullable=False),
+    sa.Column('business_id', sa.Integer(), nullable=False),
+    sa.Column('image', sa.Text(), nullable=True),
+    sa.Column('text', sa.Text(), nullable=True),
+    sa.Column('created_at', sa.DateTime(), nullable=False),
+    sa.ForeignKeyConstraint(['business_id'], ['business.id'], ),
+    sa.PrimaryKeyConstraint('id')
+    )
+    with op.batch_alter_table('business_post', schema=None) as batch_op:
+        batch_op.create_index(batch_op.f('ix_business_post_business_id'), ['business_id'], unique=False)
+
+    op.create_table('event',
+    sa.Column('id', sa.Integer(), nullable=False),
+    sa.Column('title', sa.String(length=120), nullable=True),
+    sa.Column('date', sa.String(length=50), nullable=False),
+    sa.Column('time', sa.String(length=50), nullable=False),
+    sa.Column('location', sa.String(length=255), nullable=False),
+    sa.Column('latitude', sa.Float(), nullable=True),
+    sa.Column('longitude', sa.Float(), nullable=True),
+    sa.Column('details', sa.Text(), nullable=True),
+    sa.Column('image', sa.Text(), nullable=True),
+    sa.Column('is_public', sa.Boolean(), server_default='false', nullable=False),
+    sa.Column('creator_id', sa.Integer(), nullable=False),
+    sa.Column('business_id', sa.Integer(), nullable=True),
+    sa.Column('created_at', sa.DateTime(), nullable=True),
+    sa.Column('happened', sa.Boolean(), nullable=True),
+    sa.ForeignKeyConstraint(['business_id'], ['business.id'], ),
+    sa.ForeignKeyConstraint(['creator_id'], ['user.id'], ),
+    sa.PrimaryKeyConstraint('id')
+    )
+    op.create_table('follow',
+    sa.Column('id', sa.Integer(), nullable=False),
+    sa.Column('follower_id', sa.Integer(), nullable=False),
+    sa.Column('business_id', sa.Integer(), nullable=True),
+    sa.Column('target_user_id', sa.Integer(), nullable=True),
+    sa.Column('created_at', sa.DateTime(), nullable=False),
+    sa.CheckConstraint('(business_id IS NOT NULL) <> (target_user_id IS NOT NULL)', name='ck_follow_one_target'),
+    sa.ForeignKeyConstraint(['business_id'], ['business.id'], ),
+    sa.ForeignKeyConstraint(['follower_id'], ['user.id'], ),
+    sa.ForeignKeyConstraint(['target_user_id'], ['user.id'], ),
+    sa.PrimaryKeyConstraint('id'),
+    sa.UniqueConstraint('follower_id', 'business_id', name='uq_follow_business'),
+    sa.UniqueConstraint('follower_id', 'target_user_id', name='uq_follow_user')
+    )
+    with op.batch_alter_table('follow', schema=None) as batch_op:
+        batch_op.create_index(batch_op.f('ix_follow_business_id'), ['business_id'], unique=False)
+        batch_op.create_index(batch_op.f('ix_follow_follower_id'), ['follower_id'], unique=False)
+        batch_op.create_index(batch_op.f('ix_follow_target_user_id'), ['target_user_id'], unique=False)
+
+    op.create_table('review',
+    sa.Column('id', sa.Integer(), nullable=False),
+    sa.Column('business_id', sa.Integer(), nullable=False),
+    sa.Column('author_id', sa.Integer(), nullable=False),
+    sa.Column('rating', sa.Integer(), nullable=False),
+    sa.Column('text', sa.Text(), nullable=True),
+    sa.Column('created_at', sa.DateTime(), nullable=False),
+    sa.CheckConstraint('rating >= 1 AND rating <= 5', name='ck_review_rating_range'),
+    sa.ForeignKeyConstraint(['author_id'], ['user.id'], ),
+    sa.ForeignKeyConstraint(['business_id'], ['business.id'], ),
+    sa.PrimaryKeyConstraint('id'),
+    sa.UniqueConstraint('business_id', 'author_id', name='uq_review_author')
+    )
+    with op.batch_alter_table('review', schema=None) as batch_op:
+        batch_op.create_index(batch_op.f('ix_review_author_id'), ['author_id'], unique=False)
+        batch_op.create_index(batch_op.f('ix_review_business_id'), ['business_id'], unique=False)
 
     op.create_table('chat_room',
     sa.Column('id', sa.Integer(), nullable=False),
@@ -122,6 +193,23 @@ def upgrade():
     with op.batch_alter_table('event_invitation', schema=None) as batch_op:
         batch_op.create_index(batch_op.f('ix_event_invitation_event_id'), ['event_id'], unique=False)
         batch_op.create_index(batch_op.f('ix_event_invitation_user_id'), ['user_id'], unique=False)
+
+    op.create_table('event_opinion',
+    sa.Column('id', sa.Integer(), nullable=False),
+    sa.Column('author_id', sa.Integer(), nullable=False),
+    sa.Column('event_id', sa.Integer(), nullable=False),
+    sa.Column('text', sa.Text(), nullable=True),
+    sa.Column('rating', sa.Integer(), nullable=True),
+    sa.Column('created_at', sa.DateTime(), nullable=False),
+    sa.CheckConstraint('rating IS NULL OR (rating >= 1 AND rating <= 5)', name='ck_opinion_rating_range'),
+    sa.ForeignKeyConstraint(['author_id'], ['user.id'], ),
+    sa.ForeignKeyConstraint(['event_id'], ['event.id'], ),
+    sa.PrimaryKeyConstraint('id'),
+    sa.UniqueConstraint('author_id', 'event_id', name='uq_opinion_author_event')
+    )
+    with op.batch_alter_table('event_opinion', schema=None) as batch_op:
+        batch_op.create_index(batch_op.f('ix_event_opinion_author_id'), ['author_id'], unique=False)
+        batch_op.create_index(batch_op.f('ix_event_opinion_event_id'), ['event_id'], unique=False)
 
     op.create_table('event_participants',
     sa.Column('event_id', sa.Integer(), nullable=False),
@@ -203,6 +291,11 @@ def downgrade():
 
     op.drop_table('invite_suggestion')
     op.drop_table('event_participants')
+    with op.batch_alter_table('event_opinion', schema=None) as batch_op:
+        batch_op.drop_index(batch_op.f('ix_event_opinion_event_id'))
+        batch_op.drop_index(batch_op.f('ix_event_opinion_author_id'))
+
+    op.drop_table('event_opinion')
     with op.batch_alter_table('event_invitation', schema=None) as batch_op:
         batch_op.drop_index(batch_op.f('ix_event_invitation_user_id'))
         batch_op.drop_index(batch_op.f('ix_event_invitation_event_id'))
@@ -214,6 +307,22 @@ def downgrade():
         batch_op.drop_index(batch_op.f('ix_chat_room_event_id'))
 
     op.drop_table('chat_room')
+    with op.batch_alter_table('review', schema=None) as batch_op:
+        batch_op.drop_index(batch_op.f('ix_review_business_id'))
+        batch_op.drop_index(batch_op.f('ix_review_author_id'))
+
+    op.drop_table('review')
+    with op.batch_alter_table('follow', schema=None) as batch_op:
+        batch_op.drop_index(batch_op.f('ix_follow_target_user_id'))
+        batch_op.drop_index(batch_op.f('ix_follow_follower_id'))
+        batch_op.drop_index(batch_op.f('ix_follow_business_id'))
+
+    op.drop_table('follow')
+    op.drop_table('event')
+    with op.batch_alter_table('business_post', schema=None) as batch_op:
+        batch_op.drop_index(batch_op.f('ix_business_post_business_id'))
+
+    op.drop_table('business_post')
     with op.batch_alter_table('notification', schema=None) as batch_op:
         batch_op.drop_index('ix_notification_user_read')
         batch_op.drop_index(batch_op.f('ix_notification_user_id'))
@@ -225,6 +334,9 @@ def downgrade():
         batch_op.drop_index(batch_op.f('ix_friendship_addressee_id'))
 
     op.drop_table('friendship')
-    op.drop_table('event')
+    with op.batch_alter_table('business', schema=None) as batch_op:
+        batch_op.drop_index(batch_op.f('ix_business_owner_id'))
+
+    op.drop_table('business')
     op.drop_table('user')
     # ### end Alembic commands ###

@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { useSearchParams } from "react-router-dom";
+import { useSearchParams, useNavigate } from "react-router-dom";
 import { Container, Spinner, Alert } from "react-bootstrap";
 // Tanda 7G2 — Migración Leaflet → MapLibre GL.
 //
@@ -217,7 +217,7 @@ const createUserDotElement = () => {
   return host.firstElementChild;
 };
 
-// Predicate: does this event pass the current status filter?
+// matchesStatusFilter — which events pass the active status filter.
 //
 // "all"        → legacy behaviour: hide pending invitations.
 // "pending"    → show ONLY pending invitations (inverts the legacy hide).
@@ -248,6 +248,33 @@ const matchesVisibilityFilter = (event, visibilityFilter) => {
     case "all":
     default: return true;
   }
+};
+
+// DOM element for a followed-business pin. Visually distinct from event
+// avatars: a rounded "store" badge in the brand gradient (or the
+// business photo when available).
+const createBusinessMarkerElement = (biz) => {
+  const wrap = document.createElement("div");
+  wrap.className = "sq-biz-marker";
+  wrap.setAttribute("data-business-id", String(biz.id));
+  wrap.title = biz.name || "Business";
+  wrap.style.cssText =
+    "width:38px;height:38px;border-radius:12px;cursor:pointer;" +
+    "border:2px solid #ec4899;box-shadow:0 4px 12px rgba(0,0,0,.45);" +
+    "display:flex;align-items:center;justify-content:center;overflow:hidden;" +
+    "background:linear-gradient(135deg,#6366f1,#ec4899);";
+  if (biz.profile_picture_url) {
+    const img = document.createElement("img");
+    img.src = biz.profile_picture_url;
+    img.alt = "";
+    img.style.cssText = "width:100%;height:100%;object-fit:cover;";
+    img.onerror = () => { img.remove(); wrap.textContent = "🏪"; };
+    wrap.appendChild(img);
+  } else {
+    wrap.textContent = "🏪";
+    wrap.style.fontSize = "18px";
+  }
+  return wrap;
 };
 
 export const Mapview = ({ onMapClick, onMarkerClick, onSaved }) => {
@@ -283,7 +310,11 @@ export const Mapview = ({ onMapClick, onMarkerClick, onSaved }) => {
   const containerRef = useRef(null);
   const mapRef = useRef(null);
   const markersRef = useRef([]);
+  const businessMarkersRef = useRef([]);
   const userMarkerRef = useRef(null);
+
+  // Businesses the user follows → persistent pins on the map.
+  const [followedBiz, setFollowedBiz] = useState([]);
 
   const [followUser, setFollowUserState] = useState(true);
   const followUserRef = useRef(true);
@@ -296,6 +327,7 @@ export const Mapview = ({ onMapClick, onMarkerClick, onSaved }) => {
   const hasAutoCenteredRef = useRef(false);
 
   const [searchParams, setSearchParams] = useSearchParams();
+  const navigate = useNavigate();
   const pendingFocusIdRef = useRef(null);
   const [forceShowEventId, setForceShowEventId] = useState(null);
 
@@ -445,6 +477,46 @@ export const Mapview = ({ onMapClick, onMarkerClick, onSaved }) => {
     return () => navigator.geolocation.clearWatch(watchId);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Followed businesses → fetch once, then keep their pins on the map.
+  useEffect(() => {
+    const apiUrl = import.meta.env.VITE_BACKEND_URL;
+    if (!apiUrl) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(`${apiUrl}/api/businesses/following`);
+        if (!res.ok) return;
+        const data = await res.json();
+        if (!cancelled) setFollowedBiz(Array.isArray(data) ? data : []);
+      } catch { /* ignore — pins are best-effort */ }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  // ── EFFECT: render followed-business pins ──────────────────
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+
+    businessMarkersRef.current.forEach((m) => m.remove());
+    businessMarkersRef.current = [];
+
+    followedBiz
+      .filter((b) => b.latitude != null && b.longitude != null)
+      .forEach((b) => {
+        const el = createBusinessMarkerElement(b);
+        el.addEventListener("click", (ev) => {
+          ev.stopPropagation();
+          navigate(`/business/${b.id}`);
+        });
+        const marker = new maplibregl.Marker({ element: el, anchor: "center" })
+          .setLngLat([b.longitude, b.latitude])
+          .addTo(map);
+        businessMarkersRef.current.push(marker);
+      });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [followedBiz]);
 
   // deep-link focus: when ?event=<id> is set, fly to that event
   useEffect(() => {
@@ -810,9 +882,26 @@ export const Mapview = ({ onMapClick, onMarkerClick, onSaved }) => {
       time:     ev.time || "",
       location: ev.location || ev.venue_name || "",
       image:    ev.image || "",
+      business_id: ev.business_id ?? null,
     });
     setModalOpen(true);
   };
+
+  // Discover is now a full page (/discover). When the user taps
+  // "+ SideQuest" on an external event there, the event is stashed in
+  // sessionStorage and we land back on the map — pick it up once and
+  // open the same prefilled EventModal as the old in-map flow did.
+  useEffect(() => {
+    let raw = null;
+    try { raw = sessionStorage.getItem("sq_discover_prefill"); } catch { raw = null; }
+    if (!raw) return;
+    try { sessionStorage.removeItem("sq_discover_prefill"); } catch { /* ignore */ }
+    try {
+      const ev = JSON.parse(raw);
+      if (ev && typeof ev === "object") handleCreateFromDiscover(ev);
+    } catch { /* ignore malformed */ }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const handleSaved = (eventOrNull) => {
     fetchEvents();
@@ -844,26 +933,6 @@ export const Mapview = ({ onMapClick, onMarkerClick, onSaved }) => {
           ref={containerRef}
           className="sq-maplibre-container"
           style={{ height: "100%", width: "100%" }}
-        />
-
-        {/* Tanda 7X — Discover: botón flotante + panel sobre el mapa */}
-        {!showDiscover && (
-          <button
-            type="button"
-            className="sq-discover-fab"
-            onClick={() => setShowDiscover(true)}
-            title="Discover real-world events"
-            aria-label="Discover events"
-          >
-            <FiCompass size={16} /> Discover
-          </button>
-        )}
-        <DiscoverPanel
-          show={showDiscover}
-          onClose={handleDiscoverClose}
-          userCenter={userCenter}
-          onPreview={handleDiscoverPreview}
-          onCreateFrom={handleCreateFromDiscover}
         />
       </div>
 
