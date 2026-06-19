@@ -597,7 +597,9 @@ export const Navbar = () => {
             })
             .catch(() => {});
         return () => { cancelled = true; };
-    }, [isLogged]);
+        // Re-fetch al navegar (p.ej. justo tras aceptar una invitación) para
+        // que "Manage" aparezca sin recargar.
+    }, [isLogged, location.pathname]);
 
     const [showMessages, setShowMessages] = useState(false);
 

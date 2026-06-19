@@ -1015,6 +1015,13 @@ def create_event():
 
     # Pro-only ticket price (ignored / rejected for non-pro creators).
     biz = db.session.get(Business, body.get("business_id")) if body.get("business_id") else None
+    # Phase 5b — solo owner/manager/editor del business pueden crear un event
+    # atado a ese business (antes no se verificaba → cualquiera podía atarlo).
+    if biz and _business_role(current_user_id, biz) not in ("owner", "manager", "editor"):
+        return jsonify({
+            "msg": "You can't create events for this business.",
+            "code": "forbidden",
+        }), 403
     price, price_err = _coerce_event_price(creator, body, biz)
     if price_err:
         return price_err
@@ -4038,8 +4045,33 @@ def create_team_invite(business_id):
     if role not in TEAM_ROLES:
         return jsonify({"msg": "role must be one of: manager, editor, viewer"}), 400
 
-    email = (body.get("email") or "").strip().lower() or None
-    username = (body.get("username") or "").strip() or None
+    # lstrip("@") por si el front manda "@usuario" (seguridad extra).
+    email = (body.get("email") or "").strip().lower().lstrip("@") or None
+    username = (body.get("username") or "").strip().lstrip("@") or None
+
+    # Resolver el destinatario (si lo hay) ANTES de crear, para deduplicar.
+    target = None
+    if username:
+        target = User.query.filter_by(username=username).first()
+    elif email:
+        target = User.query.filter(User.email == email).first()
+
+    # Dedup de invitaciones DIRIGIDas (los enlaces abiertos sí pueden ser varios,
+    # cada uno de un solo uso):
+    if target:
+        if target.id == biz.owner_id:
+            return jsonify({"msg": "This user is the owner of the company.",
+                            "code": "already_owner"}), 409
+        if TeamMembership.query.filter_by(business_id=business_id, user_id=target.id).first():
+            return jsonify({"msg": "This user is already in the team.",
+                            "code": "already_member"}), 409
+    if email or username:
+        dup = TeamInvite.query.filter_by(business_id=business_id, status="pending")
+        dup = dup.filter(TeamInvite.invited_username == username) if username \
+            else dup.filter(TeamInvite.email == email)
+        if dup.first():
+            return jsonify({"msg": "An invite is already pending for this user.",
+                            "code": "already_invited"}), 409
 
     inv = TeamInvite(
         business_id=business_id, role=role,
@@ -4052,11 +4084,6 @@ def create_team_invite(business_id):
     db.session.commit()
 
     # If targeted to a known user, ping them in-app.
-    target = None
-    if username:
-        target = User.query.filter_by(username=username).first()
-    elif email:
-        target = User.query.filter(User.email == email).first()
     if target:
         _create_notification(user_id=target.id, notif_type="team_invite", payload={
             "business_id": business_id, "business_name": biz.name,

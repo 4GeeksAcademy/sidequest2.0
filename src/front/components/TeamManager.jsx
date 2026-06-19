@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Modal, Button, Form, Spinner, Badge, InputGroup } from "react-bootstrap";
 import {
   FiUsers,
@@ -34,6 +34,8 @@ const apiInvite       = (bid, body) => fetch(`${API}/api/businesses/${bid}/team/
 const apiUpdateMember = (bid, uid, body) => fetch(`${API}/api/businesses/${bid}/team/${uid}`, { method: "PUT", headers: authHeaders(), body: JSON.stringify(body) }).then(handle);
 const apiRemoveMember = (bid, uid) => fetch(`${API}/api/businesses/${bid}/team/${uid}`, { method: "DELETE", headers: authHeaders() }).then(handle);
 const apiRevokeInvite = (bid, iid) => fetch(`${API}/api/businesses/${bid}/team/invites/${iid}`, { method: "DELETE", headers: authHeaders() }).then(handle);
+// Autocomplete por username (reutiliza la búsqueda de usuarios existente).
+const apiSearchUsers = (q) => fetch(`${API}/api/friends/search?q=${encodeURIComponent(q)}`, { headers: authHeaders() }).then(handle);
 
 const ROLE_BADGE = {
   owner:   { bg: "primary",   label: "Owner" },
@@ -62,6 +64,17 @@ const CSS = `
   padding: 0.75rem; margin-top: 0.5rem;
 }
 .sq-team-link { word-break: break-all; font-size: 0.78rem; color: #9aa4b2; }
+.sq-team-suggest {
+  position: absolute; left: 0; right: 0; top: 100%; z-index: 20;
+  background: #12141c; border: 1px solid #262a36; border-radius: 8px;
+  margin-top: 2px; max-height: 220px; overflow-y: auto;
+  box-shadow: 0 8px 20px rgba(0,0,0,0.5);
+}
+.sq-team-suggest-item {
+  display: block; width: 100%; text-align: left; border: none; background: transparent;
+  color: #e9ecef; font-size: 0.85rem; padding: 0.4rem 0.7rem; cursor: pointer;
+}
+.sq-team-suggest-item:hover { background: #1e2230; }
 `;
 
 const myId = () => {
@@ -79,6 +92,9 @@ export const TeamManager = ({ businessId, businessName, show, onHide }) => {
   // invite form
   const [inviteRole, setInviteRole]   = useState("viewer");
   const [inviteTarget, setInviteTarget] = useState("");   // email or username, empty = open link
+  const [suggestions, setSuggestions] = useState([]);     // username autocomplete (≥3 chars)
+  const [showSug, setShowSug] = useState(false);
+  const sugTimerRef = useRef(null);
   const [inviting, setInviting]       = useState(false);
   const [lastLink, setLastLink]       = useState(null);
   const [copied, setCopied]           = useState(false);
@@ -113,6 +129,29 @@ export const TeamManager = ({ businessId, businessName, show, onHide }) => {
     if (m.user_id === myId()) return false;          // don't manage yourself here
     if (m.role === "manager") return canManageManagers;
     return canManage;                                // editor / viewer
+  };
+
+  // Autocomplete por username: a partir de 3 letras, debounced. (El email se
+  // escribe entero; este endpoint solo busca por username.)
+  const onTargetChange = (val) => {
+    setInviteTarget(val);
+    const term = val.trim().replace(/^@/, "");
+    if (sugTimerRef.current) clearTimeout(sugTimerRef.current);
+    if (term.length < 3) { setSuggestions([]); setShowSug(false); return; }
+    sugTimerRef.current = setTimeout(async () => {
+      try {
+        const list = await apiSearchUsers(term);
+        setSuggestions(Array.isArray(list) ? list.slice(0, 8) : []);
+        setShowSug(true);
+      } catch {
+        setSuggestions([]);
+      }
+    }, 300);
+  };
+  const pickSuggestion = (u) => {
+    setInviteTarget(u.username);
+    setSuggestions([]);
+    setShowSug(false);
   };
 
   const createInvite = async () => {
@@ -285,16 +324,32 @@ export const TeamManager = ({ businessId, businessName, show, onHide }) => {
                       <option value="viewer">Viewer</option>
                     </Form.Select>
                   </div>
-                  <div className="flex-grow-1" style={{ minWidth: 180 }}>
+                  <div className="flex-grow-1" style={{ minWidth: 180, position: "relative" }}>
                     <Form.Label className="small text-secondary mb-1">
                       Email or username <span className="text-secondary">(empty = open link)</span>
                     </Form.Label>
                     <Form.Control
                       size="sm"
                       value={inviteTarget}
-                      onChange={(e) => setInviteTarget(e.target.value)}
+                      onChange={(e) => onTargetChange(e.target.value)}
+                      onFocus={() => suggestions.length > 0 && setShowSug(true)}
                       placeholder="email / @username / empty"
+                      autoComplete="off"
                     />
+                    {showSug && suggestions.length > 0 && (
+                      <div className="sq-team-suggest">
+                        {suggestions.map((u) => (
+                          <button
+                            type="button"
+                            key={u.id}
+                            className="sq-team-suggest-item"
+                            onMouseDown={(e) => { e.preventDefault(); pickSuggestion(u); }}
+                          >
+                            @{u.username}
+                          </button>
+                        ))}
+                      </div>
+                    )}
                   </div>
                   <Button variant="primary" size="sm" onClick={createInvite} disabled={inviting}>
                     {inviting ? <Spinner size="sm" animation="border" /> : <><FiStar className="me-1" /> Create invite</>}

@@ -364,7 +364,8 @@ export const BottomNavbar = () => {
       })
       .catch(() => {});
     return () => { cancelled = true; };
-  }, [isLogged]);
+    // Re-fetch al navegar (tras aceptar invitación) → "Manage" sin recargar.
+  }, [isLogged, location.pathname]);
   // Total de mensajes de chat no leídos — lo mantiene fresco el poll de
   // /chat/rooms del Navbar (cada 15s), ambos montados juntos en Layout.
   const chatUnread = store.chatUnreadTotal || 0;
